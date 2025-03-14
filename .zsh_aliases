@@ -1,0 +1,331 @@
+# [[ -f "$SH_ALIASES_DIR" ]] && source "$SH_ALIASES_DIR"
+# [[ -s "$HOME/.zsh_aliases" ]] && source "$HOME/.zsh_aliases"
+
+#############################################################################
+# FILE LISTING ALIASES
+#############################################################################
+
+# basic listing commands
+alias la="ls -AF"           # list all files (including hidden, except . and ..)
+alias l1="ls -1AF"          # list files (one per line)
+alias ll="ls -lhAF"         # list all files with detailed info (long format, human-readable sizes)
+alias llg="ls -lhAF | grep" # list files and filter with grep
+
+# directory-specific listings
+alias ld="ls -d */"      # list only directories
+alias lda="ls -dA */"    # list all directories including hidden ones
+alias lp="ls -d \"$(pwd)\"/*" # list full file paths
+
+# sorting by time (modification time)
+alias lt="ls -Alt"   # sort by modification time (latest first)
+alias ltr="ls -Altr" # sort by modification time (oldest first)
+
+# sorting by size
+alias lss="ls -AFlS"  # sort by size (largest first)
+alias lsr="ls -AFlSr" # sort by size (smallest first)
+
+# filtering and searching
+alias l.="ls -A | egrep '^\.'"        # list only dotfiles (hidden files)
+alias lg="ls -AF | grep"              # search for filenames using grep
+alias lpg="ls -d \"$(pwd)\"/* | grep" # search for filenames but list full path
+
+# modern alternatives (if installed)
+if command -v eza >/dev/null 2>&1; then # eza is installed (newer fork of exa)
+  alias ls="eza --icons --group-directories-first"
+  alias ll="eza -lha --icons --group-directories-first --git"
+  alias lt="eza -lhaT --icons --group-directories-first --git"
+  alias lta="eza -lhaT --icons --group-directories-first"
+  alias tree="eza --tree --icons"
+elif command -v exa >/dev/null 2>&1; then # exa is installed
+  alias ls="exa --icons --group-directories-first"
+  alias ll="exa -lha --icons --group-directories-first --git"
+  alias lt="exa -lhaT --icons --group-directories-first --git"
+  alias lta="exa -lhaT --icons --group-directories-first"
+  alias tree="exa --tree --icons"
+elif command -v lsd >/dev/null 2>&1; then # lsd is installed
+  alias ls="lsd --group-dirs first"
+  alias ll="lsd -la --group-dirs first"
+  alias lt="lsd --tree --group-dirs first"
+  alias lta="lsd --tree -a --group-dirs first"
+  alias tree="lsd --tree --group-dirs first"
+fi
+
+#############################################################################
+# NAVIGATION ALIASES
+#############################################################################
+
+# quick navigation
+alias ..="cd .."             # go up one level
+alias ...="cd ../.."         # go up two levels
+alias ....="cd ../../.."     # go up three levels
+alias .....="cd ../../../.." # go up four levels
+alias ~="cd ~"               # go to home directory
+alias -- -="cd -"            # go to previous directory
+
+# workspace and common directories
+alias wd="cd $WORKSPACE_DIR"
+alias docs="cd ~/Documents"
+alias dl="cd ~/Downloads"
+alias desk="cd ~/Desktop"
+alias proj="cd ~/Projects"
+
+# create and navigate to directory in one step
+alias mkcd="_mkcd"
+
+# directory stack commands
+alias d='dirs -v' # display directory stack
+alias 1='cd -1'   # go to 1st directory in stack
+alias 2='cd -2'   # go to 2nd directory in stack
+alias 3='cd -3'   # go to 3rd directory in stack
+alias 4='cd -4'   # go to 4th directory in stack
+
+# quick bookmarks (requires direnv or similar tool)
+alias save='pwd > ~/.last_dir'
+alias jmp='cd "$(cat ~/.last_dir)"'
+
+#############################################################################
+# SYSTEM AND UTILITY ALIASES
+#############################################################################
+
+# basic system utilities
+alias c="clear"       # clear terminal screen
+alias cl="clear; la"  # clear and list all files
+alias cld="clear; ld" # clear and list directories
+alias cl.="clear; l." # clear and list hidden files
+alias cls="clear; ls" # clear and run ls
+
+# file operations
+alias cp='cp -iv'       # confirm before overwriting
+alias mv='mv -iv'       # confirm before overwriting
+alias rm='rm -iv'       # confirm before deleting
+alias mkdir='mkdir -pv' # make parent directories as needed
+alias rmrf='rm -rf'     # force remove recursively (use with caution!)
+
+# display commands
+alias df='df -h'      # human-readable disk usage
+alias du='du -h'      # human-readable file size
+alias dus='du -hs'    # summarize disk usage
+alias dud='du -hd1'   # disk usage by directory (depth 1)
+alias free='free -m'  # display free memory in MB
+
+# process management
+alias psa="ps aux"                          # all processes
+alias psg="ps aux | grep -v grep | grep -i" # search processes
+alias psmem="ps aux | sort -nk 4,4"         # sort by memory usage
+alias pscpu="ps aux | sort -nk 3,3"         # sort by CPU usage
+alias kp="_kill_processes_on_ports"         # kill process by port
+
+# editor and pager
+alias e='${EDITOR:-nano}'   # open in default editor
+alias view='${PAGER:-less}' # open in default pager
+alias vi="vim"              # make sure vi is vim
+
+# cat and less with bat (if installed)
+if command -v bat >/dev/null 2>&1; then
+  alias cat="bat --style=plain"
+  alias less="bat --paging=always"
+fi
+
+# TODO: move to appropriate section
+command -v rg >/dev/null 2>&1 && alias grep="rg"
+
+#############################################################################
+# NETWORK UTILITIES
+#############################################################################
+
+# ip addresses
+alias pubip="dig +short txt ch whoami.cloudflare @1.0.0.1 | tr -d '\"' || curl -s https://ipinfo.io/ip"
+alias prvip="ipconfig getifaddr en0 || ip route get 1 | awk '{print \$7}'"
+alias ips="ifconfig -a | grep -o 'inet6\? \(addr:\)\?\s\?\(\(\([0-9]\+\.\)\{3\}[0-9]\+\)\|[a-fA-F0-9:]\+\)' | awk '{ sub(/inet6? (addr:)? ?/, \"\"); print }'"
+
+# network tools
+alias ping='ping -c 5'                    # ping with count of 5
+alias ports='netstat -tulanp'             # show open ports
+alias http='python3 -m http.server 8000'  # simple http server
+
+# url utilities 
+alias urlencode='python3 -c "import sys, urllib.parse as ul; print(ul.quote_plus(sys.argv[1]))"'
+alias urldecode='python3 -c "import sys, urllib.parse as ul; print(ul.unquote_plus(sys.argv[1]))"'
+
+# dns lookup utilities
+alias dig1="dig +short"      # short dns lookup
+alias dns="dig +answer"      # dns lookup with answer
+alias dig-trace="dig +trace" # dns lookup with trace
+
+#############################################################################
+# CLIPBOARD AND TEXT UTILITIES
+#############################################################################
+
+# clipboard commands
+alias cpy="pbcopy"     # copy to clipboard
+alias cpyf="pbcopy <"  # copy file contents to clipboard
+alias pst="pbpaste"    # paste clipboard contents
+alias pstf="pbpaste >" # paste clipboard contents to file
+
+# text processing
+alias trim="sed -e 's/^[[:space:]]*//g' -e 's/[[:space:]]*\$//g'"
+alias lowercase="tr '[:upper:]' '[:lower:]'"
+alias uppercase="tr '[:lower:]' '[:upper:]'"
+alias count='wc -l'                       # count lines
+alias sum="awk '{s+=\$1} END {print s}'"  # sum a column of numbers
+
+#############################################################################
+# GIT ALIASES
+#############################################################################
+
+# basic git commands
+# alias g="git"
+# alias ga="git add"
+# alias gc="git commit -m"
+# alias gs="git status"
+# alias gp="git push"
+# alias gl="git pull"
+# alias gd="git diff"
+# alias gds="git diff --staged"
+# alias gb="git branch"
+# alias gco="git checkout"
+# alias gst="_git_status_short" # use the custom status function
+
+# git logs
+# alias glog="git log --oneline --decorate --graph"
+# alias gloga="git log --oneline --decorate --graph --all"
+# alias gls="git log --stat"
+# alias glp="git log -p"
+
+# git utilities
+# alias gclean="git clean -fd"          # remove untracked files and directories
+# alias greset="git reset --hard"       # hard reset to HEAD
+# alias gundo="git reset --soft HEAD~1" # undo last commit, keep changes
+
+#############################################################################
+# DEVELOPMENT ALIASES
+#############################################################################
+
+# node.js
+alias node-dev="node --inspect --trace-warnings"
+alias npm-root="npm root -g"
+alias npml="npm list --depth=0"
+alias npmlg="npm list -g --depth=0"
+
+# docker
+alias d="docker"
+alias dc="docker-compose"
+alias dps="docker ps"
+alias dpsa="docker ps -a"
+alias dimg="docker images"
+alias dup="docker-compose up -d"
+alias ddown="docker-compose down"
+alias dlogs="docker-compose logs -f"
+
+# python
+# alias py="python3"
+# alias pip="pip3"
+# alias venv="python3 -m venv venv"
+# alias activate="source venv/bin/activate"
+
+# _code [-v | --vsc] [-a | --ads] [-c | --cursor] [-vt | --vsc-tunnel] [-ct | --cursor-tunnel] [-h | --help] [file | folder | ...]
+alias code="_code"  # unified ally to open different code editors
+
+#############################################################################
+# SYSTEM MAINTENANCE
+#############################################################################
+
+# update
+# _system_update [-y | --yes] [-d | --dry-run] [-v | --verbose] [-s | --silent] [-h | --help]
+alias update="_system_update"             # update
+alias update-full="_system_update -y -v"  # update all system packages without confirmation with verbose output
+
+# cleanup
+# _system_cleanup [-a | --all] [--ds] [--swap] [-p | --python] [-d | --dry-run] [-v | --verbose] [-s | --silent] [-h | --help]
+alias cleanup="_system_cleanup"             # cleanup
+alias cleanup-full="_system_cleanup -a -v"  # clean all unnecessary files with verbose output
+
+# empty
+# _empty_trash [-y | --yes] [-l | --logs] [-t | --trash] [-v | --verbose] [-s | --silent] [-h | --help]
+alias empty="_empty_trash"            # empty
+alias empty-full="_empty_trash -y -v" # empty trash without confirmation with verbose output
+
+# py-clean
+# _clean_pycache [-t]
+alias py-clean="_clean_pycache" # clean python cache
+
+# maintain
+alias maintain="_system_update && _system_cleanup && _empty_trash"                        # maintain system
+alias maintain-full="_system_update -y -v && _system_cleanup -a -v && _empty_trash -y -v" # maintain system with full cleanup
+
+#############################################################################
+# FILE OPERATIONS
+#############################################################################
+
+# archive utilities
+alias bkf="_bak_file"   # backup file with custom function
+alias tarc="_tarc"      # create tar archive
+alias tarx="_tarx"      # extract tar archive
+alias extr="_extract"   # extract any compressed file format
+alias bkptar="_bak_tar" # backup file or folder
+alias zp="zip -r"       # zip recursively
+
+# file hashing
+alias md5="openssl md5"
+alias sha1="openssl sha1"
+alias sha256="_generateHash"  # use custom function
+
+# file search
+alias ff="find . -type f -name"  # find file by name
+if command -v fd >/dev/null 2>&1; then
+    alias find="fd"
+else
+    alias fd="find . -type d -name"
+fi
+alias ftext="grep -r"            # find text in files
+alias fsize="find . -size"       # find files by size
+
+# show file differences
+alias diff="diff -u"                                              # unified diff format
+command -v colordiff >/dev/null 2>&1 && alias diff="colordiff -u" # colorized diff
+
+#############################################################################
+# TERMINAL UTILITIES
+#############################################################################
+
+# history
+alias h="history"
+alias h1="history 10"
+alias h2="history 20"
+alias h3="history 30"
+alias hgrep="history | grep"  # search history
+
+# terminal
+alias openterm="_open_terminal"     # use custom terminal function
+alias path='echo -e ${PATH//:/\\n}' # show path entries one per line
+
+# date and time
+alias now="_now"
+alias utc="_utc"
+alias epoch="_get_timestamp"
+
+# calculator
+alias calc="bc -l"
+
+# weather
+alias weather="curl -s 'wttr.in/{SF,Istanbul,London}?format=3'"
+alias forecast="curl -s wttr.in/London"
+
+# security
+alias genpass="_genpass"                                                      # generate secure password
+alias ssha="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"  # ssh without host checks
+
+# finance
+alias btc="curl -s rate.sx/btc"
+alias eth="curl -s rate.sx/eth"
+alias xrp="curl -s rate.sx/xrp"
+alias ltc="curl -s rate.sx/ltc"
+alias rates="_exchange_rates"
+alias usdtry="_usdtry"
+alias gbptry="_gbptry"
+alias eurtry="_eurtry"
+
+# timezones
+alias tz="_timezones"
+
+## eof

@@ -1,0 +1,250 @@
+# [[ -f "$ESP_IDF_HELPERS_DIR" ]] && source "$ESP_IDF_HELPERS_DIR"
+# [[ -f "$HOME/esp/.esp_idf_helpers" ]] && source "$HOME/esp/.esp_idf_helpers"
+
+export ESP32_IDF="$HOME/esp/esp-idf"
+export ESP8266_COMPILER="$HOME/esp/xtensa-lx106-elf/bin"
+export OLD_ESP8266_SDK="$HOME/esp/ESP8266_RTOS_SDK"
+
+# export IDF_PATH="$HOME/esp/esp-idf"
+# export PATH="$IDF_PATH/tools:$PATH"
+# export IDF_PATH="$HOME/esp/ESP8266_RTOS_SDK"
+# export PATH="$IDF_PATH/tools:$PATH"
+# export PATH="$HOME/esp/xtensa-lx106-elf/bin:$PATH"
+
+# clean up any existing ESP-related paths from PATH
+_clean_esp_paths() {
+    local NEW_PATH=""
+    local p
+    local OIFS="$IFS"
+    IFS=":"
+    for p in $PATH; do
+        IFS="$OIFS"
+        if [[ "$p" != *"$HOME/esp"* ]]; then
+            NEW_PATH="${NEW_PATH:+$NEW_PATH:}$p"
+        fi
+    done
+    export PATH="$NEW_PATH"
+}
+
+# check if the current environment is ESP32 or ESP8266
+_check_esp_env() {
+    local env="$1"
+    case "$env" in
+        esp32)
+            if [[ -n "$IDF_PATH" && "$IDF_PATH" == "$ESP32_IDF" ]]; then
+                echo -e "${BLUE}${BOLD}Current environment:${NC} ${GREEN}ESP32${NC}"
+                echo -e "  ${CYAN}IDF_PATH:${NC} ${YELLOW}$IDF_PATH${NC}"
+                return 0
+            fi
+            ;;
+        esp8266)
+            if [[ "$PATH" == *"$ESP8266_COMPILER"* ]]; then
+                echo -e "${BLUE}${BOLD}Current environment:${NC} ${GREEN}ESP8266${NC}"
+                echo -e "  ${CYAN}Compiler:${NC} ${YELLOW}$ESP8266_COMPILER/xtensa-lx106-elf-gcc${NC}"
+                return 0
+            fi
+            ;;
+        old_esp8266)
+            if [[ -n "$IDF_PATH" && "$IDF_PATH" == "$OLD_ESP8266_SDK" ]]; then
+                echo -e "${BLUE}${BOLD}Current environment:${NC} ${GREEN}Old ESP8266 SDK${NC}"
+                echo -e "  ${CYAN}IDF_PATH:${NC} ${YELLOW}$IDF_PATH${NC}"
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+_esp_switch_env() {
+    unset IDF_PATH
+    _clean_esp_paths
+    
+    local target="$1"
+    local switch_status=0
+    
+    case "$target" in
+        esp32)
+            if [[ -d "$ESP32_IDF" ]]; then
+                export IDF_PATH="$ESP32_IDF"
+                if [[ -f "$ESP32_IDF/export.sh" ]]; then
+                    source "$ESP32_IDF/export.sh" > /dev/null 2>&1 || {
+                        echo -e "${YELLOW}Warning: Issues sourcing ESP32 export script, falling back to basic setup${NC}"
+                        export PATH="$ESP32_IDF/tools:$PATH"
+                    }
+                else
+                    export PATH="$ESP32_IDF/tools:$PATH"
+                fi
+                echo -e "${GREEN}${BOLD}Switched to ESP32 environment.${NC}"
+            else
+                echo -e "${RED}Error: ESP32 IDF not found at ${YELLOW}$ESP32_IDF${RED}.${NC}"
+                switch_status=1
+            fi
+            ;;
+        esp8266)
+            if [[ -x "$ESP8266_COMPILER/xtensa-lx106-elf-gcc" ]]; then
+                export PATH="$ESP8266_COMPILER:$PATH"
+                echo -e "${GREEN}${BOLD}Switched to ESP8266 environment.${NC}"
+            else
+                echo -e "${RED}Error: ESP8266 compiler not found at ${YELLOW}$ESP8266_COMPILER${RED}.${NC}"
+                switch_status=1
+            fi
+            ;;
+        old_esp8266)
+            if [[ -d "$OLD_ESP8266_SDK" ]]; then
+                export IDF_PATH="$OLD_ESP8266_SDK"
+                if [[ -f "$OLD_ESP8266_SDK/export.sh" ]]; then
+                    source "$OLD_ESP8266_SDK/export.sh" > /dev/null 2>&1 || {
+                        echo -e "${YELLOW}Warning: Issues sourcing ESP8266 SDK export script, falling back to basic setup${NC}"
+                        export PATH="$OLD_ESP8266_SDK/tools:$PATH"
+                    }
+                else
+                    export PATH="$OLD_ESP8266_SDK/tools:$PATH"
+                fi
+                echo -e "${GREEN}${BOLD}Switched to Old ESP8266 SDK environment.${NC}"
+            else
+                echo -e "${RED}Error: Old ESP8266 SDK not found at ${YELLOW}$OLD_ESP8266_SDK${RED}.${NC}"
+                switch_status=1
+            fi
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown environment '${YELLOW}$target${RED}'.${NC}"
+            switch_status=1
+            ;;
+    esac
+    
+    return $switch_status
+}
+
+# main function for ESP environment management
+_esp() {
+    local usage="$(cat <<EOF
+${BOLD}${BLUE}Usage: esp [options]${NC}
+
+${BOLD}${CYAN}Options:${NC}
+  ${YELLOW}-s, --set${NC} ${CYAN}<32|8266|8266-old>${NC}   Switch to a specific ESP environment
+  ${YELLOW}-c, --current${NC}                  Display current environment status
+  ${YELLOW}-p, --paths${NC}                    Show configured ESP paths
+  ${YELLOW}-h, --help${NC}                     Display this help message
+
+${BOLD}${BLUE}Usage: esp [-s|--set <32|8266|8266-old>] [-h|--help]${NC}
+
+${BOLD}${CYAN}Examples:${NC}
+  ${GREEN}esp -s 32${NC}           # Switch to ESP32 environment
+  ${GREEN}esp --set 8266${NC}      # Switch to ESP8266 environment
+  ${GREEN}esp -s 8266-old${NC}     # Switch to old ESP8266 SDK environment
+  ${GREEN}esp -c${NC}              # Check current environment
+EOF
+    )"
+    local paths
+    paths="$(cat <<EOF
+${BLUE}Configured ESP Paths:${NC}
+  ${CYAN}ESP32 IDF:${NC} ${YELLOW}$ESP32_IDF${NC}
+  ${CYAN}ESP8266 Compiler:${NC} ${YELLOW}$ESP8266_COMPILER${NC}
+  ${CYAN}Old ESP8266 SDK:${NC} ${YELLOW}$OLD_ESP8266_SDK${NC}
+EOF
+    )"
+
+    # if no arguments are provided, display the usage message
+    if [[ $# -eq 0 ]]; then
+        echo "$usage"
+        return 1
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--set)
+                if [[ -z "$2" ]]; then
+                    echo -e "${RED}Error: Missing argument for option '${YELLOW}$1${RED}'.${NC}"
+                    echo -e "$usage"
+                    return 1
+                fi
+
+                local env
+                case "$2" in
+                    32)
+                        env="esp32"
+                        ;;
+                    8266)
+                        env="esp8266"
+                        ;;
+                    8266-old)
+                        env="old_esp8266"
+                        ;;
+                    *)
+                        echo -e "${RED}Error: Unknown environment '${YELLOW}$2${RED}'.${NC}"
+                        echo -e "$usage"
+                        return 1
+                        ;;
+                esac
+
+                _esp_switch_env "$env"
+                shift
+                ;;
+            -c|--current)
+                local current_status=1
+                _check_esp_env esp32 && current_status=0
+                _check_esp_env esp8266 && current_status=0
+                _check_esp_env old_esp8266 && current_status=0
+                [[ $current_status -ne 0 ]] && echo -e "${RED}Error: No ESP environment detected.${NC}"
+                ;;
+            -p|--paths)
+                echo -e "$paths"
+                ;;
+            -h|--help)
+                echo -e "$usage"
+                ;;
+            *)
+                echo -e "${RED}Error: Unknown option '${YELLOW}$1${RED}'.${NC}"
+                echo -e "$usage"
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    return 0
+}
+
+if [ -n "$ZSH_VERSION" ]; then
+    _esp_completion() {
+        local curcontext="$curcontext" state line
+        typeset -A opt_args
+        
+        _arguments \
+            '(-s --set)'{-s,--set}'[Switch to a specific ESP environment]:environment:(32 8266 8266-old)' \
+            '(-c --current)'{-c,--current}'[Display current environment status]' \
+            '(-p --paths)'{-p,--paths}'[Show configured ESP paths]' \
+            '(-h --help)'{-h,--help}'[Display help message]'
+    }
+    
+    compdef _esp_completion esp
+elif [ -n "$BASH_VERSION" ]; then
+    _esp_completion() {
+        local curw prev opts
+        COMPREPLY=()
+        curw="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        
+        if [[ "$prev" == "-s" || "$prev" == "--set" ]]; then
+            COMPREPLY=( $(compgen -W "32 8266 8266-old" -- "$curw") )
+            return 0
+        fi
+        
+        opts="-s --set -c --current -p --paths -h --help"
+        
+        COMPREPLY=( $(compgen -W "${opts}" -- "$curw") )
+        return 0
+    }
+
+    complete -F _esp_completion esp
+fi
+
+# alias get_idf="source $HOME/esp/esp-idf/export.sh"                    # load esp-idf (esp32)
+# alias get_lx106="export PATH=$PATH:$HOME/esp/xtensa-lx106-elf/bin"    # load esp8266 compiler
+# alias get_idf_old="source $HOME/esp/ESP8266_RTOS_SDK/export.sh"       # load old esp8266 sdk
+alias esp="_esp"
+alias esp32="_esp --set 32"
+alias esp8266="_esp --set 8266"
+alias old_esp8266="_esp --set 8266-old"
+
+## eof

@@ -1,0 +1,1723 @@
+# [[ -f "$SH_FUNCTIONS_DIR" ]] && source "$SH_FUNCTIONS_DIR"
+# [[ -f "$HOME/.zsh_functions" ]] && source "$HOME/.zsh_functions"
+
+#############################################################################
+# TIME AND DATE FUNCTIONS
+#############################################################################
+
+_now() { date +"$LONG_DATE_FORMAT"; }
+
+_utc() { date -u +"%Y-%m-%d %H:%M:%S UTC"; }
+
+# returns the current timestamp in seconds
+_get_timestamp() { date +%s; }
+
+# returns the current date in YYYYMMDD format
+_get_date_as_suffix() { date +"%Y%m%d"; }
+
+# returns the current time in HHMMSS format
+_get_time_as_suffix() { date +"%H%M%S"; }
+
+# returns the current date and time in YYYYMMDDHHMMSS format
+_get_datetime_as_suffix() { date +"%Y%m%d%H%M%S"; }
+
+# show current time in different timezones
+_timezones() {
+    now=$(date +%s)
+    echo -e "🌍 ${GREEN}UTC:          ${NC} $(TZ=UTC date -r $now +"$LONG_DATE_FORMAT")"
+    echo -e "🇺🇸  ${GREEN}San Francisco:${NC} $(TZ=America/Los_Angeles date -r $now +"$LONG_DATE_FORMAT")"
+    echo -e "🇹🇷  ${GREEN}Istanbul:     ${NC} $(TZ=Europe/Istanbul date -r $now +"$LONG_DATE_FORMAT")"
+    echo -e "🇬🇧  ${GREEN}London:       ${NC} $(TZ=Europe/London date -r $now +"$LONG_DATE_FORMAT")"
+}
+
+#############################################################################
+# FILE AND DIRECTORY OPERATIONS
+#############################################################################
+
+# returns: 0 (true) if path exists and is a file, 1 (false) otherwise
+_is_file() {
+  [[ -z "$1" ]] && return 1
+  [[ -f "$1" ]] && return 0 || return 1
+}
+
+# returns: 0 (true) if path exists and is a directory, 1 (false) otherwise
+_is_directory() {
+  [[ -z "$1" ]] && return 1
+  [[ -d "$1" ]] && return 0 || return 1
+}
+
+# creates a directory if it does not exist then changes to it
+_mkcd() {
+  [[ -z "$1" ]] && return 1
+  mkdir -p "$1" && cd "$1" || return 1
+}
+
+# creates a backup of given files by appending a timestamp
+# options: 
+#   -c: compress the backup
+#   -d: custom backup directory
+# usage: _bak_file [-c] [-d backup_dir] file1 [file2...]
+_bak_file() {
+  local compress=false
+  local backup_dir=""
+  local OPTIND=1
+  
+  while getopts ":cd:" opt; do
+    case $opt in
+      c) compress=true ;;
+      d) backup_dir="${OPTARG%/}/" ;;
+      \?) echo -e "${RED}Invalid option: -$OPTARG${NC}" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  if [[ $# -eq 0 ]]; then
+    echo -e "${RED}Error:${NC} No files specified"
+    echo -e "${BOLD}Usage:${NC} _bak_file [-c] [-d backup_dir] file1 [file2...]"
+    return 1
+  fi
+  
+  local timestamp=$(_get_timestamp)
+  local arr=("$@")
+  
+  for i in "${arr[@]}"; do
+    if [[ -f "$i" ]]; then
+      # name convention: bak-<YYYYMMDDHHMMSS><filename>
+      # local backup_file="${backup_dir}bak-$(_get_datetime_as_suffix)-$(basename "$i")"
+      # name convention: <filename>-<YYYYMMDDHHMMSS>.bak
+      local backup_file="${backup_dir}$(basename "$i")-$(_get_datetime_as_suffix).bak"
+      echo -e "${BLUE}Creating backup:${NC} $backup_file"
+      cp "$i" "$backup_file"
+      
+      if $compress; then
+        echo -e "${BLUE}Compressing backup:${NC} $backup_file"
+        gzip "$backup_file"
+        echo -e "${GREEN}Created:${NC} ${backup_file}.gz"
+      fi
+    else
+      echo -e "${YELLOW}Warning:${NC} $i is not a file, skipping"
+    fi
+  done
+}
+
+#############################################################################
+# HASHING AND CHECKSUMS
+#############################################################################
+
+# generates a hash for a given file
+# usage: _generate_hash file [algorithm]
+# supported algorithms: md5, sha1, sha256, sha512
+_generate_hash() {
+  if [[ -z "$1" ]]; then
+    echo -e "${RED}Error:${NC} No file specified"
+    echo -e "${BOLD}Usage:${NC} _generate_hash file [algorithm]"
+    return 1
+  fi
+  
+  if [[ ! -f "$1" ]]; then
+    echo -e "${RED}Error:${NC} File not found: $1"
+    return 1
+  fi
+  
+  local algo="${2:-sha256}"
+  case "$algo" in
+    md5)
+      md5sum "$1" 2>/dev/null || md5 -q "$1" || openssl md5 -r "$1" | awk '{print $1}'
+      ;;
+    sha1)
+      shasum -a 1 "$1" 2>/dev/null | awk '{print $1}' || openssl sha1 -r "$1" | awk '{print $1}'
+      ;;
+    sha256)
+      shasum -a 256 "$1" 2>/dev/null | awk '{print $1}' || openssl sha256 -r "$1" | awk '{print $1}'
+      ;;
+    sha512)
+      shasum -a 512 "$1" 2>/dev/null | awk '{print $1}' || openssl sha512 -r "$1" | awk '{print $1}'
+      ;;
+    *)
+      echo -e "${RED}Error:${NC} Unsupported algorithm: $algo"
+      return 1
+      ;;
+  esac
+}
+
+# generates a SHA256 hash for a given file using shasum (legacy function)
+# usage: _generate_SHA256 [file]
+_generate_SHA256() { _generate_hash "$1" "sha256"; }
+# generates a SHA256 hash for a given file using openssl (legacy function)
+# usage: _checksum_SHA256 [file]
+_checksum_SHA256() { openssl dgst -sha256 "$1"; }
+
+#############################################################################
+# PROCESS MANAGEMENT
+#############################################################################
+
+# TODO: resolve recursive function issue
+# kills processes running on the specified ports
+# usage: _kill_processes_on_ports [-f] port1 [port2 port3]
+_kill_processes_on_ports() {
+	  if ! command -v lsof &> /dev/null; then
+		    echo -e "${RED}Error:${NC} lsof command not found. Please install it first."
+        return 1
+    fi
+    
+    local force=false
+    if [[ "$1" == "-f" || "$1" == "--force" ]]; then
+        force=true
+        shift
+    fi
+    
+    if [ $# -eq 0 ]; then
+        echo -e "${RED}Error:${NC} No port specified"
+        echo -e "${BOLD}Usage:${NC} _kill_processes_on_ports [-f] port1 [port2 port3]"
+        return 1
+    fi
+    
+    if [ $# -gt 3 ]; then
+        echo -e "${RED}Error:${NC} Too many arguments. Please provide up to 3 port numbers."
+        return 1
+    fi
+    
+    local portNumber=$1
+    
+    if ! [[ "$portNumber" =~ ^[0-9]+$ ]] || [ "$portNumber" -lt 0 ] || [ "$portNumber" -gt 65535 ]; then
+        echo -e "${RED}Error:${NC} '$portNumber' is not a valid port number (must be 0-65535)"
+        shift
+        if [ $# -gt 0 ]; then
+            _kill_processes_on_ports "$@"
+        fi
+        return 1
+    fi
+    
+    local processIds=$(lsof -i :"${portNumber}" -t)
+    
+    if [ -z "${processIds}" ]; then
+        echo -e "${GREEN}No process is running on port ${portNumber}${NC}"
+    else
+        echo -e "${YELLOW}Warning:${NC} Processes are running on port ${portNumber}"
+        for pid in ${processIds}; do
+            ps -p "$pid" -o pid,ppid,user,command
+        done
+        
+        if ! $force; then
+            read -r -n 1 -p "$(echo -e "${YELLOW}Kill these processes? (y/N)${NC} ")" confirm
+            echo
+            confirm=${confirm:-N}
+            if [[ "$confirm" != [yY]* ]]; then
+                echo -e "${RED}Skipping port ${portNumber}${NC}"
+                shift
+                if [ $# -gt 0 ]; then
+                    _kill_processes_on_ports "$@"
+                fi
+                return 0
+            fi
+        fi
+        
+        echo -e "${RED}Killing processes on port ${portNumber}:${NC} ${processIds}"
+        for pid in ${processIds}; do
+            kill "$pid" 2>/dev/null && sleep 0.5
+            if ps -p "$pid" &>/dev/null; then
+                echo -e "${YELLOW}Process ${pid} didn't respond to SIGTERM, using SIGKILL...${NC}"
+                kill -9 "$pid" 2>/dev/null
+            fi
+            if ! ps -p "$pid" &>/dev/null; then
+                echo -e "${GREEN}Process ${pid} is killed${NC}"
+            else
+                echo -e "${RED}Failed to kill process ${pid}, might need elevated privileges${NC}"
+            fi
+        done
+    fi
+    
+    # keep track of return status
+    local result=$?
+    
+    shift
+    if [ $# -gt 0 ]; then
+        _kill_processes_on_ports "$@"
+        # combine return status
+        local nested_result=$?
+        [ $nested_result -ne 0 ] && result=$nested_result
+    fi
+    
+    return $result
+}
+
+# finds and displays processes by name with option to kill them
+# usage: _find_process [-k] pattern
+_find_process() {
+  local kill_mode=false
+  if [[ "$1" == "-k" ]]; then
+    kill_mode=true
+    shift
+  fi
+  
+  if [[ -z "$1" ]]; then
+    echo -e "${RED}Error:${NC} No pattern specified"
+    echo -e "${BOLD}Usage:${NC} _find_process [-k] pattern"
+    return 1
+  fi
+  
+  local pattern="$1"
+  local processes=$(ps aux | grep -i "$pattern" | grep -v "grep")
+  
+  if [[ -z "$processes" ]]; then
+    echo -e "${YELLOW}Warning:${NC} No processes found matching: $pattern"
+    return 0
+  fi
+
+  echo -e "${YELLOW}Warning:${NC} Found processes matching: $pattern"
+  echo -e "${BLUE}Processes:${NC} $processes"
+  
+  if $kill_mode; then
+    read -p "$(echo -e "${YELLOW}Kill these processes? (y/N)${NC} ")" confirm
+    if [[ "$confirm" == [yY]* ]]; then
+      echo "$processes" | awk '{print $2}' | xargs kill -9
+      echo -e "${GREEN}Processes killed${NC}"
+    fi
+  fi
+}
+
+#############################################################################
+# ARCHIVE MANAGEMENT
+#############################################################################
+
+# universal archive extraction function
+# usage: _extract [-d destination] file
+_extract() {
+  local destination=""
+  local OPTIND=1
+  
+  while getopts ":d:" opt; do
+    case $opt in
+      d) destination="$OPTARG" ;;
+      \?) echo -e "${RED}${BOLD}Invalid option:${NC} -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  if [[ -z "$1" ]]; then
+    echo -e "${BLUE}${BOLD}Usage:${NC} _extract ${YELLOW}[-d destination]${NC} ${CYAN}file${NC}"
+    return 1
+  fi
+  
+  local file="$1"
+  local extract_dir="${destination:-$(pwd)}"
+  
+  if [[ ! -f "$file" ]]; then
+    echo -e "${RED}${BOLD}Error:${NC} File not found: ${YELLOW}$file${NC}"
+    return 1
+  fi
+  
+  mkdir -p "$extract_dir"
+  
+  case "$file" in
+    *.tar.bz2|*.tbz2)
+      tar xjf "$file" -C "$extract_dir"
+      ;;
+    *.tar.gz|*.tgz)
+      tar xzf "$file" -C "$extract_dir"
+      ;;
+    *.tar.xz|*.txz)
+      tar xJf "$file" -C "$extract_dir"
+      ;;
+    *.tar)
+      tar xf "$file" -C "$extract_dir"
+      ;;
+    *.bz2)
+      bunzip2 -c "$file" > "$extract_dir/$(basename "${file%.bz2}")"
+      ;;
+    *.gz)
+      gunzip -c "$file" > "$extract_dir/$(basename "${file%.gz}")"
+      ;;
+    *.zip)
+      unzip -q "$file" -d "$extract_dir"
+      ;;
+    *.rar)
+      unrar x "$file" "$extract_dir"
+      ;;
+    *.7z)
+      7z x "$file" -o"$extract_dir"
+      ;;
+    *)
+      echo -e "${RED}${BOLD}Unsupported file format:${NC} ${YELLOW}$file${NC}"
+      return 1
+      ;;
+  esac
+  
+  echo -e "${GREEN}${BOLD}Extracted to:${NC} ${CYAN}$extract_dir${NC}"
+}
+
+# universal archive creation function
+# usage: _archive [-f format] output_file input1 [input2...]
+_archive() {
+  local format="tar.gz"
+  local OPTIND=1
+  
+  while getopts ":f:" opt; do
+    case $opt in
+      f) format="$OPTARG" ;;
+      \?) echo -e "${RED}${BOLD}Invalid option:${NC} -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  if [[ $# -lt 2 ]]; then
+    echo -e "${BLUE}${BOLD}Usage:${NC} _archive ${YELLOW}[-f format]${NC} ${CYAN}output_file input1 [input2...]${NC}"
+    echo -e "${MAGENTA}Supported formats:${NC} ${CYAN}tar, tar.gz, tar.bz2, tar.xz, zip, 7z${NC}"
+    return 1
+  fi
+  
+  local output="$1"
+  shift
+  local inputs=("$@")
+  
+  # add extension if not present
+  case "$format" in
+    tar) [[ "$output" != *.tar ]] && output="${output}.tar" ;;
+    tar.gz|tgz) [[ "$output" != *.tar.gz && "$output" != *.tgz ]] && output="${output}.tar.gz" ;;
+    tar.bz2|tbz2) [[ "$output" != *.tar.bz2 && "$output" != *.tbz2 ]] && output="${output}.tar.bz2" ;;
+    tar.xz|txz) [[ "$output" != *.tar.xz && "$output" != *.txz ]] && output="${output}.tar.xz" ;;
+    zip) [[ "$output" != *.zip ]] && output="${output}.zip" ;;
+    7z) [[ "$output" != *.7z ]] && output="${output}.7z" ;;
+    *)
+      echo -e "${RED}${BOLD}Unsupported format:${NC} ${YELLOW}$format${NC}"
+      return 1
+      ;;
+  esac
+  
+  # create archive based on format
+  case "$format" in
+    tar)
+      tar -cf "$output" "${inputs[@]}"
+      ;;
+    tar.gz|tgz)
+      tar -czf "$output" "${inputs[@]}"
+      ;;
+    tar.bz2|tbz2)
+      tar -cjf "$output" "${inputs[@]}"
+      ;;
+    tar.xz|txz)
+      tar -cJf "$output" "${inputs[@]}"
+      ;;
+    zip)
+      zip -r "$output" "${inputs[@]}"
+      ;;
+    7z)
+      7z a "$output" "${inputs[@]}"
+      ;;
+  esac
+  
+  echo -e "${GREEN}${BOLD}Created archive:${NC} ${CYAN}$output${NC}"
+}
+
+# compresses a file or folder into a tar.gz archive (legacy function)
+# usage: _tarc <file | folder> [output]
+_tarc() {
+  # check if the first argument (the file/folder to archive) is provided
+  if [[ -z "$1" ]]; then
+    echo -e "${BLUE}${BOLD}Usage:${NC} _tarc ${CYAN}<file | folder>${NC} ${YELLOW}[output]${NC}"
+    return 1
+  fi
+  local input="$1"
+  local output="$2"
+  # verify that the input path exists
+  if [[ -e "$input" ]]; then
+    # if no second argument is given, derive the name from the input
+    if [[ -z "$output" ]]; then
+      output="$(basename "$input")"
+      output="${output%.*}"  # remove the file extension if present
+    fi
+    # create the tar.gz archive
+    tar -czvf "${output}.tar.gz" "$input"
+  else
+    echo -e "${RED}${BOLD}Error:${NC} ${YELLOW}$input${NC} is not a valid file or directory."
+    return 1
+  fi
+}
+
+# extracts a tar.gz archive (legacy function)
+# usage: _tarx <file.tar.gz>
+_tarx() {
+  if [[ -z "$1" ]]; then
+    echo -e "${BLUE}${BOLD}Usage:${NC} _tarx ${CYAN}<file.tar.gz>${NC}"
+    return 1
+  fi
+  if [[ -f "$1" ]] && [[ "$1" =~ \.tar\.gz$ ]]; then
+    tar -xzvf "$1"
+  else
+    echo -e "${RED}${BOLD}Error:${NC} ${YELLOW}$1${NC} is not a valid tar.gz file."
+    return 1
+  fi
+}
+
+# creates a tar.gz archive of the given file or folder (legacy function)
+# usage: _bak_tar [file | folder]
+_bak_tar() {
+  # check if the first argument (the file/folder to backup) is provided
+  if [[ -z "$1" ]]; then
+    echo -e "${BLUE}${BOLD}Usage:${NC} _bak_tar ${CYAN}[file | folder]${NC}"
+    return 1
+  fi
+  local input="$1"
+  # naming convention: <YYYYMMDD>-<filename>.tar.gz
+  local prefix="$(_get_date_as_suffix)"
+  local output="${prefix}-$(basename "$input")"
+  # call the existing _tarc function
+  _tarc "$input" "$output"
+}
+
+#############################################################################
+# TERMINAL AND EDITOR MANAGEMENT
+#############################################################################
+
+# opens a new terminal window with the specified command and profile
+# usage: _open_terminal [-c command] [-p profile]
+_open_terminal() {
+    local command=""
+    local profile="ubuntu"
+    local options
+    options=$(getopt -o c:p: --long command:,profile: -- "$@") || return 1
+    eval set -- "$options"
+    
+    while true; do
+        case "$1" in
+            -c|--command)
+                command="$2"
+                shift 2
+                ;;
+            -p|--profile)
+                profile="$2"
+                shift 2
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid option: $1${NC}" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    # check if the OS is macOS
+    if ! _is_macos; then
+      echo -e "${RED}This script only works on macOS${NC}" >&2
+      return 1
+    fi
+    
+    # open Terminal with the specified command and profile
+    osascript <<EOF
+    tell application "Terminal"
+        do script "$command"
+        set current settings of front window to settings set "$profile"
+    end tell
+EOF
+}
+
+# unified to open different code editors
+# usage: code [-v | --vsc] [-a | --ads] [-c | --cursor] [-vt | --vsc-tunnel] [-ct | --cursor-tunnel] [-h | --help] [file | folder | ...]
+_code() {
+    # define paths for each editor
+    local VSCODE_PATH="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    local ADS_PATH="/Applications/Azure Data Studio.app/Contents/Resources/app/bin/code"
+    local CURSOR_PATH="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
+    # define tunnel paths
+    local VSCODE_TUNNEL_PATH="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code_tunnel"
+    local CURSOR_TUNNEL_PATH="/Applications/Cursor.app/Contents/Resources/app/bin/cursor_tunnel"
+    local usage="$(cat <<EOF
+${BOLD}${CYAN}USAGE:${NC}
+  ${BLUE}code${NC} [${YELLOW}options${NC}] [${CYAN}file | folder | ...${NC}]
+
+Opens a code editor of your choice with optional files or folders.
+If no editor option is specified, Visual Studio Code will be used by default.
+
+${BOLD}${CYAN}DESCRIPTION:${NC}
+  This command allows you to quickly open files or directories in different
+  code editors installed on your system. If no editor option is specified,
+  VS Code will be used by default.
+
+${BOLD}${CYAN}OPTIONS:${NC}
+  ${YELLOW}-v, --vsc${NC}            Open in Visual Studio Code (default)
+  ${YELLOW}-a, --ads${NC}            Open in Azure Data Studio
+  ${YELLOW}-c, --cursor${NC}         Open in Cursor
+  ${YELLOW}-vt, --vsc-tunnel${NC}    Use VS Code tunnel for remote development
+  ${YELLOW}-ct, --cursor-tunnel${NC} Use Cursor tunnel for remote development
+  ${YELLOW}-h, --help${NC}           Show this help message
+
+${BOLD}${CYAN}EXAMPLES:${NC}
+  ${GREEN}code${NC}                           # Launch VS Code
+  ${GREEN}code -a${NC}                        # Launch Azure Data Studio
+  ${GREEN}code -v myfile.js${NC}              # Open myfile.js in VS Code
+  ${GREEN}code -c ~/projects/myproject${NC}   # Open project folder in Cursor
+
+${BOLD}${CYAN}NOTE:${NC} Only one editor option can be used at a time. If multiple options
+      are provided, only the last one will be applied.
+EOF
+    )"
+    # default editor to vs code
+    local editor="vsc"
+    local args=()
+    # if no arguments, just open the default editor (vs code)
+    if [[ $# -eq 0 ]]; then
+        "$VSCODE_PATH"
+        return
+    fi
+    # parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -v|--vsc)
+                editor="vsc"
+                shift
+                ;;
+            -a|--ads)
+                editor="ads"
+                shift
+                ;;
+            -c|--cursor)
+                editor="cursor"
+                shift
+                ;;
+            -vt|--vsc-tunnel)
+                editor="vsc-tunnel"
+                shift
+                ;;
+            -ct|--cursor-tunnel)
+                editor="cursor-tunnel"
+                shift
+                ;;
+            -h|--help)
+                echo -e "$usage"
+                return
+                ;;
+            *)
+                args+=("$1")  # collect all file/folder arguments
+                shift
+                ;;
+        esac
+    done
+    # invoke the correct command
+    case "$editor" in
+        vsc) "$VSCODE_PATH" "${args[@]}" ;;
+        ads) "$ADS_PATH" "${args[@]}" ;;
+        cursor) "$CURSOR_PATH" "${args[@]}" ;;
+        vsc-tunnel) "$VSCODE_TUNNEL_PATH" "${args[@]}" ;;
+        cursor-tunnel) "$CURSOR_TUNNEL_PATH" "${args[@]}" ;;
+    esac
+}
+
+#############################################################################
+# ADDITIONAL UTILITY FUNCTIONS
+#############################################################################
+
+# shows interactive disk usage for current directory
+_disk_usage() {
+  if command -v ncdu &>/dev/null; then
+    ncdu
+  else
+    du -hd 1 | sort -hr
+  fi
+}
+
+# generates a secure random password
+# usage: _genpass [length]
+_genpass() {
+  local length=${1:-16}  # default length of 16 if not specified
+  
+  # validate that length is a positive integer
+  if ! [[ "$length" =~ ^[0-9]+$ ]] || [ "$length" -lt 8 ]; then
+    echo -e "${RED}Error:${NC} Password length must be a positive integer and at least 8 characters" >&2
+    return 1
+  fi
+  
+  # generate password using /dev/urandom as source and a diverse character set
+  LC_ALL=C tr -dc 'A-Za-z0-9!"#$%&'\''()*+,-./:;<=>?@[\]^_`{|}~' </dev/urandom | head -c "$length"
+  
+  # add a newline for better terminal display
+  echo
+}
+
+# icon definitions
+ICON_BRANCH="⎇ "
+ICON_CHECK="✓"
+ICON_WARNING="⚠"
+ICON_REMOTE="⇄"
+ICON_STASH="📦"
+ICON_STAGED="●"
+ICON_UNSTAGED="○"
+ICON_UNTRACKED="?"
+
+# check if in git repository
+_is_git_repo() {
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    echo -e "${RED}Not a git repository${NC}"
+    return 1
+  fi
+  return 0
+}
+
+# display git status information
+_git_status() {
+  # check if inside git repository
+  _is_git_repo || return 1
+
+  # default to short mode
+  local mode="short"
+
+  # process command line options
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -s|--short)
+        mode="short"
+        shift
+        ;;
+      -d|--detailed)
+        mode="detailed"
+        shift
+        ;;
+      *)
+        echo -e "${RED}Unknown option: $1${NC}"
+        echo -e "${BOLD}Usage:${NC} _git_status [-s|--short] [-d|--detailed]"
+        return 1
+        ;;
+    esac
+  done
+
+  # get branch information
+  local branch=$(git symbolic-ref --short HEAD 2>/dev/null || git describe --tags --always 2>/dev/null)
+
+  # always show branch information
+  echo -e "${BLUE}${ICON_BRANCH}Branch:${NC} ${MAGENTA}$branch${NC}"
+
+  # remote tracking branch (not short mode only)
+  if [[ "$mode" == "detailed" ]]; then
+    local remote_branch=$(git for-each-ref --format='%(upstream:short)' "$(git symbolic-ref -q HEAD)")
+    if [[ -n "$remote_branch" ]]; then
+      local ahead_behind=$(git rev-list --left-right --count "$remote_branch"..."$branch" 2>/dev/null)
+      if [[ $? -eq 0 ]]; then
+        local ahead=$(echo "$ahead_behind" | awk '{print $2}')
+        local behind=$(echo "$ahead_behind" | awk '{print $1}')
+        echo -e "${BLUE}${ICON_REMOTE}Remote:${NC} ${MAGENTA}$remote_branch${NC} [↑$ahead|↓$behind]"
+      fi
+    else
+      echo -e "${BLUE}${ICON_REMOTE}Remote:${NC} ${YELLOW}No tracking branch${NC}"
+    fi
+    
+    # Stash information (detailed mode only)
+    local stash_count=$(git stash list | wc -l | tr -d ' ')
+    if [[ $stash_count -gt 0 ]]; then
+      echo -e "${BLUE}${ICON_STASH}Stashed:${NC} ${YELLOW}$stash_count stash(es)${NC}"
+    fi
+  fi
+
+  # show status information
+  local staged_changes=$(git diff --name-only --staged | wc -l | tr -d ' ')
+  local unstaged_changes=$(git diff --name-only | wc -l | tr -d ' ')
+  local untracked=$(git ls-files --others --exclude-standard | wc -l | tr -d ' ')
+  local total_changes=$((staged_changes + unstaged_changes + untracked))
+
+  # display status differently based on mode
+  if [[ "$mode" == "short" ]]; then
+    if [[ $total_changes -eq 0 ]]; then
+      echo -e "${GREEN}${ICON_CHECK} Working tree clean${NC}"
+    else
+      echo -e "${YELLOW}${ICON_WARNING} $total_changes file(s) changed${NC}"
+      git -c color.status=always status --short
+    fi
+  else
+    echo -e "${BLUE}Status:${NC}"
+    if [[ $total_changes -eq 0 ]]; then
+      echo -e "${GREEN}${ICON_CHECK} Working tree clean${NC}"
+    else
+      if [[ $staged_changes -gt 0 ]]; then
+        echo -e "${GREEN}${ICON_STAGED} $staged_changes staged file(s)${NC}"
+      fi
+      if [[ $unstaged_changes -gt 0 ]]; then
+        echo -e "${RED}${ICON_UNSTAGED} $unstaged_changes unstaged file(s)${NC}"
+      fi
+      if [[ $untracked -gt 0 ]]; then
+        echo -e "${YELLOW}${ICON_UNTRACKED} $untracked untracked file(s)${NC}"
+      fi
+      
+      echo -e "\n${BLUE}Changed files:${NC}"
+      git -c color.status=always status --short
+    fi
+  fi
+}
+
+# JSON pretty printer with colorized output
+# usage: _json_pretty [file | command output]
+_json_pretty() {
+  if [[ -p /dev/stdin ]]; then
+    # data from pipe
+    if command -v jq &>/dev/null; then
+      jq -C '.'
+    else
+      python -m json.tool
+    fi
+  elif [[ -f "$1" ]]; then
+    # data from file
+    if command -v jq &>/dev/null; then
+      jq -C '.' "$1"
+    else
+      python -m json.tool "$1"
+    fi
+  else
+    echo -e "${RED}Error:${NC} No valid input provided"
+    echo -e "${BOLD}Usage:${NC} _json_pretty [file] or command | _json_pretty"
+    return 1
+  fi
+}
+
+#############################################################################
+# SYSTEM MAINTENANCE FUNCTIONS
+#############################################################################
+
+# checks if a command is available in the system
+_has_command() { [[ -n "$1" ]] && command -v "$1" >/dev/null 2>&1 }
+
+# check if system is macOS
+_is_macos() { [[ "$(uname)" = "Darwin" ]] }
+
+# check if shell is bash
+_is_bash() { [[ -n "$BASH_VERSION" ]] }
+
+# check if shell is zsh
+_is_zsh() { [[ -n "$ZSH_VERSION" ]] }
+
+# set up logging with standardized path structure
+_setup_logging() {
+  local func_name=$1           # name of the calling for log organization
+  local log_path_custom=$2     # optional custom log path
+  local is_silent=$3           # optional flag to control console output
+  local log_dir_default        # default directory for logs
+  local log_file_default       # default log file path
+  local log_file_final         # final resolved log file to use
+  local log_dir                # directory portion of the log path
+  local timestamp              # current timestamp
+  
+  # create timestamped filename - avoid command substitution in variable assignment
+  timestamp=`date -u +"%Y%m%dT%H%M%SZ"`
+  
+  # set up paths
+  log_dir_default="$HOME/Library/Logs/MyScripts/$func_name"
+  log_file_default="$log_dir_default/$timestamp.log"
+  
+  # use custom path or default
+  if [[ -n "$log_path_custom" ]]; then
+    log_file_final=$log_path_custom
+  else
+    log_file_final=$log_file_default
+  fi
+  
+  # get directory path - use backticks instead of $()
+  log_dir=`dirname "$log_file_final"`
+  
+  # create directory
+  mkdir -p "$log_dir" 2>/dev/null
+  
+  # create log file
+  touch "$log_file_final" 2>/dev/null
+  
+  # write initial content - using old-style command substitution
+  timestamp=`date -u '+%Y-%m-%dT%H:%M:%SZ'`
+  echo "[$timestamp] Starting $func_name" > "$log_file_final"
+  echo "#######################################" >> "$log_file_final"
+  
+  # return path - just echo it
+  echo "$log_file_final"
+}
+
+# log a message to console and file
+_log() {
+  local log_level=$1            # severity level (INFO, SUCCESS, WARNING, ERROR, EXEC)
+  local log_message=$2          # message content to log
+  local log_file=${3:-/dev/null} # log file path (defaults to /dev/null)
+  local is_silent=${4:-false}   # silent mode flag (defaults to false)
+
+   # define log level properties inline using case statement
+  local title="" style="" use_stderr=false force_display=false
+  
+  case "$log_level" in
+    "INFO")
+      title="INFO"
+      style="${BLUE}[INFO]${NC}"
+      use_stderr=false
+      force_display=false
+      ;;
+    "SUCCESS")
+      title="SUCCESS"
+      style="${GREEN}[SUCCESS]${NC}"
+      use_stderr=false
+      force_display=false
+      ;;
+    "WARNING")
+      title="WARNING"
+      style="${YELLOW}[WARNING]${NC}"
+      use_stderr=false
+      force_display=false
+      ;;
+    "ERROR")
+      title="ERROR"
+      style="${RED}[ERROR]${NC}"
+      use_stderr=true
+      force_display=true
+      ;;
+    "EXEC")
+      title="INFO:EXEC"
+      style="${BLUE}[INFO:EXEC]${NC}"
+      use_stderr=false
+      force_display=false
+      ;;
+    *)
+      title=$log_level
+      style="${YELLOW}[$log_level]${NC}"
+      use_stderr=false
+      force_display=false
+      ;;
+  esac
+
+  local timestamp=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
+
+  # always log to file if a valid path is provided
+  if [[ -n "$log_file" && "$log_file" != "/dev/null" ]]; then
+    # check if directory exists and try to create it if not
+    local log_dir=$(dirname "$log_file")
+    if [[ ! -d "$log_dir" ]]; then
+      mkdir -p "$log_dir" 2>/dev/null
+    fi
+    
+    # try to write to log file
+    if [[ -w "$log_file" || -w "$log_dir" ]]; then
+      # write plain text to log file (without color codes)
+      echo "[$timestamp] [$title] $log_message" >> "$log_file" 2>/dev/null || {
+        # if failed to write to log file, output the error but continue
+        echo -e "${YELLOW}Warning:${NC} Could not write to log file: $log_file" >&2
+      }
+    fi
+  fi
+  
+  # display to console based on level and silent mode
+  if [[ "$is_silent" == false || "$force_display" == true ]]; then
+    if [[ "$use_stderr" == true ]]; then
+      echo -e "$style $log_message" >&2
+    else
+      echo -e "$style $log_message"
+    fi
+  fi
+}
+
+# set up sudo for privileged operations
+# _setup_sudo() {
+#   local is_sudo_needed=${1:-true}    # flag indicating sudo is needed (defaults to true)
+#   local is_silent=${2:-false}        # silent mode flag (defaults to false)
+#   local log_file=${3:-/dev/null}     # log file path (defaults to /dev/null)
+#   
+#   if [[ "$is_sudo_needed" != true ]]; then
+#     return 0
+#   fi
+# 
+#   # declare the sudo keep-alive pid
+#   local _SUDO_KEEPALIVE_PID=""
+# 
+#   # clean up sudo keep-alive process
+#   _cleanup_sudo_keepalive() {
+#     if [[ -n "$_SUDO_KEEPALIVE_PID" ]]; then
+#       kill "$_SUDO_KEEPALIVE_PID" 2>/dev/null || true
+#       wait "$_SUDO_KEEPALIVE_PID" 2>/dev/null || true
+#       # echo "Cleaning up sudo process (PID=$_SUDO_KEEPALIVE_PID)"
+#       _log "INFO" "Cleaning up sudo process (PID=$_SUDO_KEEPALIVE_PID)" "$log_file" "$is_silent"
+#       _SUDO_KEEPALIVE_PID=""
+#     fi
+#   }
+# 
+#   # trap cleanup on exit
+#   trap _cleanup_sudo_keepalive EXIT INT TERM
+# 
+#   _log "INFO" "Requesting admin privileges..." "$log_file" "$is_silent"
+# 
+#   # cache sudo credentials
+#   sudo -v || return 1
+# 
+#   # keep sudo timestamp fresh in the background
+#   (while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null) & _SUDO_KEEPALIVE_PID=$!
+# 
+#   _log "SUCCESS" "Sudo privileges acquired with PID=$_SUDO_KEEPALIVE_PID" "$log_file" "$is_silent"
+# 
+#   return 0
+# }
+
+# run a command with proper logging
+_run_command() {
+  local cmd_desc=$1               # description of the command being run
+  local cmd_exec=$2               # actual command to execute
+  local log_file=${3:-/dev/null}  # log file path (defaults to /dev/null)
+  local is_verbose=${4:-false}    # verbose output flag (defaults to false)
+  local is_silent=${5:-false}     # silent mode flag (defaults to false)
+  local is_dry_run=${6:-false}    # dry run flag (defaults to false)
+  local cmd_output=""             # command output storage
+  local exit_code=0               # command exit code
+  
+  _log "INFO" "Starting: $cmd_desc" "$log_file" "$is_silent"
+  
+  if [[ "$is_dry_run" == true ]]; then
+    _log "INFO" "[DRY RUN] Would execute: $cmd_exec" "$log_file" "$is_silent"
+    return 0
+  fi
+  
+  if [[ "$is_verbose" == true && "$is_silent" == false ]]; then
+    # echo "🔄 Running: $cmd_exec" | tee -a "$log_file"
+    _log "EXEC" "Running: $cmd_exec" "$log_file" "$is_silent"
+    # use a subshell to capture the exit code while still showing output
+    # (eval "$cmd_exec" | tee -a "$log_file") && exit_code=0 || exit_code=$?
+    # use bash -c to execute the command
+    (bash -c "$cmd_exec" | tee -a "$log_file") && exit_code=0 || exit_code=$?
+  else
+    # cmd_output=$(eval "$cmd_exec" 2>&1) || exit_code=$?
+    cmd_output=$(bash -c "$cmd_exec" 2>&1) || exit_code=$?
+    echo "$cmd_output" >> "$log_file"
+  fi
+  
+  if [[ $exit_code -eq 0 ]]; then
+    _log "SUCCESS" "Completed: $cmd_desc" "$log_file" "$is_silent"
+  else
+    _log "ERROR" "Failed: $cmd_desc (exit code: $exit_code)" "$log_file" "$is_silent"
+    [[ "$is_verbose" == true && "$is_silent" == false ]] || echo -e "${RED}$cmd_output${NC}" >&2
+  fi
+  
+  return $exit_code
+}
+
+# updates all system packages depending on the OS
+# _system_update [-y | --yes] [-d | --dry-run] [-v | --verbose] [-s | --silent] [-h | --help]
+_system_update() {
+  # default settings
+  local is_auto_yes=false
+  local is_dry_run=false
+  local is_verbose=false
+  local is_silent=false
+  local error_count=0
+  local start_time=$(date +%s)
+  local log_file=""
+  local usage="$(cat <<EOF
+${BOLD}${CYAN}USAGE:${NC}
+  ${BLUE}update${NC} [${YELLOW}options${NC}]
+
+Updates system packages and software components.
+
+${BOLD}${CYAN}DESCRIPTION:${NC}
+  This command allows you to update and upgrade system packages and software
+  components with various control options for automation and verbosity.
+
+${BOLD}${CYAN}OPTIONS:${NC}
+  ${YELLOW}-y, --yes${NC}         Run in non-interactive mode (automatically answer yes)
+  ${YELLOW}-d, --dry-run${NC}     Show what would be updated without making changes
+  ${YELLOW}-v, --verbose${NC}     Display detailed output during operation
+  ${YELLOW}-s, --silent${NC}      Minimize output (show only errors)
+  ${YELLOW}-h, --help${NC}        Show this help message
+
+${BOLD}${CYAN}EXAMPLES:${NC}
+  ${GREEN}update${NC}               # Run update with interactive prompts
+  ${GREEN}update -y${NC}            # Run update and accept all prompts
+  ${GREEN}update -d -v${NC}         # Show detailed info about potential updates
+EOF
+  )"
+  
+  # parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo -e "$usage"
+        return 0
+        ;;
+      -y|--yes)
+        is_auto_yes=true
+        shift
+        ;;
+      -d|--dry-run)
+        is_dry_run=true
+        shift
+        ;;
+      -v|--verbose)
+        is_verbose=true
+        shift
+        ;;
+      -s|--silent)
+        is_silent=true
+        shift
+        ;;
+      -*|--*=)
+        echo -e "${RED}Error: Unsupported flag $1${NC}" >&2
+        echo -e "$usage"
+        return 1
+        ;;
+      *)
+        echo -e "${RED}Error: Unrecognized argument $1${NC}" >&2
+        echo -e "$usage"
+        return 1
+        ;;
+    esac
+  done
+  
+  # setup logging
+  # log_file=$(_setup_logging "_system_update" "$custom_log")
+  log_file=$(_setup_logging "_system_update" "" "$is_silent")
+  
+  # check if we're on macOS
+  if ! _is_macos; then
+    _log "ERROR" "This script only works on macOS" "$log_file" "$is_silent"
+    return 1
+  fi
+  
+  _log "INFO" "Starting system update process" "$log_file" "$is_silent"
+  _log "INFO" "macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))" "$log_file" "$is_silent"
+  _log "INFO" "Log file: $log_file" "$log_file" "$is_silent"
+  
+  [[ "$is_dry_run" == true ]] && _log "WARNING" "Running in dry-run mode (no changes will be made)" "$log_file" "$is_silent"
+
+  # setup sudo if needed (not in dry-run mode)
+  # [[ "$is_dry_run" == false ]] && _setup_sudo true "$is_silent" "$log_file"
+  
+  # macOS software update
+  _log "INFO" "Checking for macOS system updates..." "$log_file" "$is_silent"
+  if [[ "$is_dry_run" == true ]]; then
+    _run_command "List macOS updates" "softwareupdate -l" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+  elif [[ "$is_auto_yes" == true ]]; then
+    _run_command "Install macOS updates" "sudo softwareupdate -i -a" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+  else
+    _run_command "List macOS updates" "softwareupdate -l" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    read -p "$(echo -e "${YELLOW}Install macOS updates?${NC} (y/N) ")" confirm
+    if [[ "$confirm" =~ ^[yY] ]]; then
+      _run_command "Install macOS updates" "sudo softwareupdate -i -a" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    else
+      _log "INFO" "Skipping macOS updates" "$log_file" "$is_silent"
+    fi
+  fi
+
+  # mac app store updates using 'mas' cli
+  if command -v mas &>/dev/null; then
+    _log "INFO" "Checking for App Store updates..." "$log_file" "$is_silent" 
+    # check for outdated apps
+    if [[ "$is_dry_run" == true ]]; then
+      _run_command "List App Store updates" "mas outdated" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    elif [[ "$is_auto_yes" == true ]]; then
+      _run_command "Update App Store apps" "mas upgrade" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    else
+      _run_command "List App Store updates" "mas outdated" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+      read -p "$(echo -e "${YELLOW}Install App Store updates?${NC} (y/N) ")" confirm
+      if [[ "$confirm" =~ ^[yY] ]]; then
+        _run_command "Update App Store apps" "mas upgrade" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+      else
+        _log "INFO" "Skipping App Store updates" "$log_file" "$is_silent"
+      fi
+    fi
+  else
+    _log "INFO" "Mac App Store CLI (mas) not found. To update App Store apps via command line, install mas: 'brew install mas'" "$log_file" "$is_silent"
+  fi
+  
+  # check for available package managers and update them
+  local managers=()
+  
+  # homebrew
+  if command -v brew &>/dev/null; then
+    managers+=("brew")
+    _log "INFO" "Updating Homebrew packages..." "$log_file" "$is_silent"
+    _run_command "Update Homebrew" "brew update" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    # _run_command "Upgrade Homebrew packages" "brew upgrade$([ "$is_verbose" == true ] && echo " --verbose")" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    if [[ "$is_verbose" == true ]]; then
+      _run_command "Upgrade Homebrew packages" "brew upgrade --verbose" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    else
+      _run_command "Upgrade Homebrew packages" "brew upgrade" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    fi
+    _run_command "Cleanup Homebrew" "brew cleanup" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    # also update homebrew cask applications if available
+    if brew tap | grep -q "homebrew/cask"; then
+      _log "INFO" "Checking for Homebrew Cask application updates..." "$log_file" "$is_silent"
+      _run_command "Upgrade Homebrew Cask applications" "brew upgrade --cask$([ "$is_verbose" == true ] && echo " --verbose")" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    fi
+  fi
+  
+  # node.js packages (npm)
+  if command -v npm &>/dev/null; then
+    managers+=("npm")
+    _log "INFO" "Updating npm and global Node.js packages..." "$log_file" "$is_silent"
+    _run_command "Update npm" "npm install -g npm" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    _run_command "Update global npm packages" "npm update -g" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+  fi
+  
+  # ruby gems
+  if command -v gem &>/dev/null; then
+    managers+=("gem")
+    _log "INFO" "Updating Ruby gems..." "$log_file" "$is_silent"
+    # set a flag to determine if we should run gem operations
+    run_gem_operations=true
+    # check for write permissions to gem directory
+    gem_dir="$(gem environment gemdir)"
+    if [[ ! -w "$gem_dir" ]]; then
+      _log "WARNING" "No write permission to Ruby gems directory ($gem_dir). Consider using rbenv or rvm." "$log_file" "$is_silent"
+      # auto-skip if is_auto_yes is true (no point prompting when we know we can't write)
+      if [[ "$is_auto_yes" == true ]]; then
+        _log "WARNING" "Skipping Ruby gem operations due to insufficient permissions (auto-yes is enabled)." "$log_file" "$is_silent"
+        run_gem_operations=false
+      else
+        # prompt user
+        read -p "$(echo -e "${YELLOW}Continue with gem operations anyway?${NC} (y/N) ")" confirm
+        if [[ ! "$confirm" =~ ^[yY] ]]; then
+          _log "INFO" "Skipping Ruby gem operations." "$log_file" "$is_silent"
+          run_gem_operations=false
+        fi
+      fi
+    fi
+    # only run these commands if flag is true
+    if [[ "$run_gem_operations" == true ]]; then
+      _run_command "Update RubyGems system" "gem update --system" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+      _run_command "Update Ruby gems" "gem update" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+      _run_command "Cleanup Ruby gems" "gem cleanup" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    fi
+  fi
+  
+  # python pip packages
+  if command -v pip &>/dev/null; then
+    managers+=("pip")
+    _log "INFO" "Updating Python pip packages..." "$log_file" "$is_silent"
+    _run_command "Update pip" "pip install --upgrade pip" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+    
+    if command -v pip list --outdated &>/dev/null; then
+      if [[ "$is_auto_yes" == true ]]; then
+        _run_command "Update pip packages" "pip list --outdated --format=freeze | grep -v '^\-e' | cut -d = -f 1 | xargs -r pip install --upgrade" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+      else
+        pip list --outdated
+        read -p "$(echo -e "${YELLOW}Update outdated Python packages?${NC} (y/N) ")" confirm
+        if [[ "$confirm" =~ ^[yY] ]]; then
+          _run_command "Update pip packages" "pip list --outdated --format=freeze | grep -v '^\-e' | cut -d = -f 1 | xargs -r pip install --upgrade" "$log_file" "$is_verbose" "$is_silent" "$is_dry_run"
+        else
+          _log "INFO" "Skipping Python package updates" "$log_file" "$is_silent"
+        fi
+      fi
+    fi
+  fi
+  
+  # check if apple's rosetta 2 is installed (for apple silicon macs)
+  if [[ "$(uname -m)" == "arm64" ]]; then
+    _log "INFO" "Checking Rosetta 2 installation status..." "$log_file" "$is_silent"
+    if ! /usr/bin/pgrep -q oahd; then
+      _log "WARNING" "Rosetta 2 might not be installed. Consider installing it with: softwareupdate --install-rosetta" "$log_file" "$is_silent"
+    else
+      _log "INFO" "Rosetta 2 appears to be installed and running" "$log_file" "$is_silent"
+    fi
+  fi
+  
+  # calculate elapsed time
+  local end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+  local minutes=$((elapsed / 60))
+  local seconds=$((elapsed % 60))
+  
+  _log "INFO" "System update completed in ${minutes}m ${seconds}s" "$log_file" "$is_silent"
+  
+  if [[ ${#managers[@]} -gt 0 ]]; then
+    _log "INFO" "Updated package managers: ${managers[*]}" "$log_file" "$is_silent"
+  fi
+  
+  if [[ "$error_count" -gt 0 ]]; then
+    _log "WARNING" "Completed with $error_count errors. See log file for details: $log_file" "$log_file" "$is_silent"
+    return 1
+  else
+    _log "SUCCESS" "All updates completed successfully!" "$log_file" "$is_silent"
+    return 0
+  fi
+}
+
+# enhanced system cleanup for macOS
+# cleans up system files such as .DS_Store, vim swap files, etc.
+# _system_cleanup [-a | --all] [--ds] [--swap] [-p | --python] [-d | --dry-run] [-v | --verbose] [-s | --silent] [-h | --help]
+_system_cleanup() {
+  # default settings
+  local is_clean_ds=false
+  local is_clean_swap=false
+  local is_clean_py=false
+  local is_dry_run=false
+  local is_verbose=false
+  local is_silent=false
+  local log_file=""
+  local error_count=0
+  local cleaned_count=0
+  local usage="$(cat <<EOF
+${BOLD}${CYAN}USAGE:${NC}
+  ${BLUE}cleanup${NC} [${YELLOW}options${NC}]
+
+Cleans up system files like .DS_Store, swap files, and Python cache files.
+
+${BOLD}${CYAN}DESCRIPTION:${NC}
+  This command helps you remove various temporary and system files that
+  accumulate over time. You can select specific file types to remove or
+  perform a comprehensive cleanup of your system.
+
+${BOLD}${CYAN}OPTIONS:${NC}
+  ${YELLOW}-a, --all${NC}         Run all cleanup operations
+  ${YELLOW}--ds${NC}              Remove .DS_Store files
+  ${YELLOW}--swap${NC}            Remove swap files
+  ${YELLOW}-p, --python${NC}      Remove Python cache files
+  ${YELLOW}-d, --dry-run${NC}     Show what would be removed without removing files
+  ${YELLOW}-v, --verbose${NC}     Display detailed output during operation
+  ${YELLOW}-s, --silent${NC}      Minimize output (show only errors)
+  ${YELLOW}-h, --help${NC}        Show this help message
+
+${BOLD}${CYAN}EXAMPLES:${NC}
+  ${GREEN}cleanup -a${NC}           # Run all cleanup operations
+  ${GREEN}cleanup --ds${NC}         # Clean .DS_Store files
+  ${GREEN}cleanup -d -p${NC}        # Test what Python files would be removed
+EOF
+    )"
+  
+  # if no options provided, show help
+  if [[ $# -eq 0 ]]; then
+    echo -e "$usage"
+    return 0
+  fi
+  
+  # parse arguments
+  local args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo -e "$usage"
+        return 0
+        ;;
+      -a|--all)
+        is_clean_ds=true
+        is_clean_swap=true
+        is_clean_py=true
+        shift
+        ;;
+      --ds)
+        is_clean_ds=true
+        shift
+        ;;
+      --swap)
+        is_clean_swap=true
+        shift
+        ;;
+      -p|--python)
+        is_clean_py=true
+        shift
+        ;;
+      -d|--dry-run)
+        is_dry_run=true
+        shift
+        ;;
+      -v|--verbose)
+        is_verbose=true
+        shift
+        ;;
+      -s|--silent)
+        is_silent=true
+        shift
+        ;;
+      -*|--*=)
+        echo -e "${RED}Error: Unsupported flag $1${NC}" >&2
+        echo -e "$usage"
+        return 1
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  # setup logging
+  # log_file=$(_setup_logging "_system_cleanup" "$custom_log")
+  log_file=$(_setup_logging "_system_cleanup" "" "$is_silent")
+  
+  # check if we're on macOS
+  if ! _is_macos; then
+    _log "ERROR" "This script only works on macOS" "$log_file" "$is_silent"
+    return 1
+  fi
+  
+  _log "INFO" "Starting system cleanup" "$log_file" "$is_silent"
+  
+  # check if at least one cleaning option is selected
+  if ! $is_clean_ds && ! $is_clean_swap && ! $is_clean_py; then
+    _log "WARNING" "No cleanup options selected. Use --ds, --swap, or -p/--python to specify cleanup targets." "$log_file" "$is_silent"
+    echo -e "$usage"
+    return 0
+  fi
+  
+  # set dry run notification
+  if $is_dry_run; then
+    _log "INFO" "Dry run mode enabled - files will only be listed, not removed" "$log_file" "$is_silent"
+    else
+    # setup sudo for real operations
+    # _setup_sudo true "$is_silent" "$log_file"
+  fi
+  
+  # to process found files
+  _process_files() {
+    local find_cmd=$1
+    local description=$2
+    local file_type=$3
+    local count=0
+    
+    _log "INFO" "Looking for $description..." "$log_file" "$is_silent"
+    
+    if $is_dry_run; then
+      if $is_verbose; then
+        eval "$find_cmd -print" | while read -r file; do
+          _log "INFO" "Would remove: $file" "$log_file" "$is_silent"
+          ((count++))
+        done
+      else
+        count=$(eval "$find_cmd -print" | wc -l | xargs)
+      fi
+      _log "INFO" "Found $count $file_type files that would be removed" "$log_file" "$is_silent"
+    else
+      if $is_verbose; then
+        eval "$find_cmd -print" | while read -r file; do
+          _log "INFO" "Removing: $file" "$log_file" "$is_silent"
+          # try without sudo first, use sudo only if needed
+          if [[ -w "$file" ]]; then
+            rm -rf "$file" 2>/dev/null && ((count++)) || _log "ERROR" "Failed to remove $file" "$log_file" "$is_silent"
+          else
+            sudo rm -rf "$file" 2>/dev/null && ((count++)) || _log "ERROR" "Failed to remove $file" "$log_file" "$is_silent"
+          fi
+        done
+      else
+        # for batch processing, count first
+        count=$(eval "$find_cmd -print" | wc -l | xargs)
+        
+        # remove user-writable files without sudo
+        eval "$find_cmd -writable -exec rm -rf {} \\; 2>/dev/null"
+        
+        # remove non-writable files with sudo
+        eval "$find_cmd ! -writable -exec sudo rm -rf {} \\; 2>/dev/null"
+      fi
+      _log "SUCCESS" "Removed $count $file_type files" "$log_file" "$is_silent"
+    fi
+    
+    cleaned_count=$((cleaned_count + count))
+    return 0
+  }
+  
+  # clean .DS_Store files
+  if $is_clean_ds; then
+    _process_files "find . -type f -name '.DS_Store'" ".DS_Store files" "DS_Store"
+  fi
+  
+  # clean swap files
+  if $is_clean_swap; then
+    _process_files "find . -type f -name '*.sw[a-p]' -o -name '.*.sw[a-p]'" "swap files" "swap"
+  fi
+  
+  # clean python cache
+  if $is_clean_py; then
+    _process_files "find . -type f -name '*.pyc' -o -name '*.pyo' -o -name '*.pyd'" "Python cache files" "Python cache"
+    _process_files "find . -type d -name '__pycache__'" "Python __pycache__ directories" "Python cache directory"
+  fi
+  
+  # summary
+  if $is_dry_run; then
+    _log "SUCCESS" "Dry run completed! Found $cleaned_count files that would be cleaned." "$log_file" "$is_silent"
+  else
+    _log "SUCCESS" "Cleanup completed! Removed $cleaned_count files." "$log_file" "$is_silent"
+  fi
+  
+  # report errors if any
+  if [[ $error_count -gt 0 ]]; then
+    _log "WARNING" "Completed with $error_count errors. Check $log_file for details." "$log_file" "$is_silent"
+    return 1
+  fi
+  
+  return 0
+}
+
+# empties trash and system logs (macOS specific)
+# _empty_trash [-y | --yes] [-l | --logs] [-t | --trash] [-v | --verbose] [-s | --silent] [-h | --help]
+_empty_trash() {
+  # default settings
+  local is_auto_yes=false
+  local is_only_logs=false
+  local is_only_trash=false
+  local is_verbose=false
+  local is_silent=false
+  local log_file=""
+  local error_count=0
+  local usage="$(cat <<EOF
+${BOLD}${CYAN}USAGE:${NC}
+  ${BLUE}empty${NC} [${YELLOW}options${NC}]
+
+Empties trash and system logs on macOS.
+
+${BOLD}${CYAN}DESCRIPTION:${NC}
+  This command allows you to safely empty the trash and clean system logs
+  on macOS. You can choose to empty just trash, just logs, or both with
+  options to control verbosity and confirmation prompts.
+
+${BOLD}${CYAN}OPTIONS:${NC}
+  ${YELLOW}-y, --yes${NC}         Run without confirmation prompts
+  ${YELLOW}-l, --logs${NC}        Clean only logs, skip trash
+  ${YELLOW}-t, --trash${NC}       Clean only trash, skip logs
+  ${YELLOW}-v, --verbose${NC}     Display detailed output during operation
+  ${YELLOW}-s, --silent${NC}      Minimize output (show only errors)
+  ${YELLOW}-h, --help${NC}        Show this help message
+
+${BOLD}${CYAN}EXAMPLES:${NC}
+  ${GREEN}empty${NC}               # Empty trash and logs with confirmation
+  ${GREEN}empty -y${NC}            # Empty trash and logs without confirmation
+  ${GREEN}empty --logs${NC}        # Clean only system logs
+  ${GREEN}empty --verbose${NC}     # Empty with detailed output
+EOF
+    )"
+    
+  # parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo -e "$usage"
+        return 0
+        ;;
+      -y|--yes)
+        is_auto_yes=true
+        shift
+        ;;
+      -l|--logs)
+        is_only_logs=true
+        shift
+        ;;
+      -t|--trash)
+        is_only_trash=true
+        shift
+        ;;
+      -v|--verbose)
+        is_verbose=true
+        shift
+        ;;
+      -s|--silent)
+        is_silent=true
+        shift
+        ;;
+      -*|--*=)
+        echo -e "${RED}Error: Unsupported flag $1${NC}" >&2
+        echo -e "$usage"
+        return 1
+        ;;
+      *)
+        echo -e "${RED}Error: Unrecognized argument $1${NC}" >&2
+        echo -e "$usage"
+        return 1
+        ;;
+    esac
+  done
+  
+  # setup logging
+  # log_file=$(_setup_logging "_empty_trash" "$custom_log")
+  log_file=$(_setup_logging "_empty_trash" "" "$is_silent")
+  
+  # check if we're on macOS
+  if ! _is_macos; then
+    _log "ERROR" "This script only works on macOS" "$log_file" "$is_silent"
+    return 1
+  fi
+
+  # check for conflicting options
+  if [[ "$is_only_logs" == true && "$is_only_trash" == true ]]; then
+    _log "ERROR" "Cannot use -l/--logs and -t/--trash together. Choose one operation." "$log_file" "$is_silent"
+    return 1
+  fi
+  
+  # confirm if not is_auto_yes
+  if [[ "$is_auto_yes" == false ]]; then
+    if [[ "$is_only_logs" == true ]]; then
+      read -r -p "$(echo -e "${YELLOW}Clean system logs?${NC} This cannot be undone. (y/N) ")" confirm
+    elif [[ "$is_only_trash" == true ]]; then
+      read -r -p "$(echo -e "${YELLOW}Empty trash?${NC} This cannot be undone. (y/N) ")" confirm
+    else
+      read -r -p "$(echo -e "${YELLOW}Empty trash and clean system logs?${NC} This cannot be undone. (y/N) ")" confirm
+    fi
+    
+    if [[ "$confirm" != [yY]* ]]; then
+      _log "INFO" "Operation cancelled by user" "$log_file" "$is_silent"
+      return 0
+    fi
+  fi
+
+  # setup sudo
+  # _setup_sudo true "$is_silent" "$log_file"
+  
+  # empty trash
+  if [[ "$is_only_logs" == false ]]; then
+    _log "INFO" "Emptying trash..." "$log_file" "$is_silent"
+    
+    # user's trash - no glob pattern, direct path
+    if [[ -d "${HOME}/.Trash" ]]; then
+      if [[ "$is_verbose" == true ]]; then
+        _run_command "Empty user trash" "sudo rm -rfv \"${HOME}/.Trash\"/*" "$log_file" "$is_verbose" "$is_silent" false
+      else
+        _run_command "Empty user trash" "sudo rm -rf \"${HOME}/.Trash\"/*" "$log_file" "$is_verbose" "$is_silent" false
+      fi
+    else
+      _log "INFO" "User trash directory not found" "$log_file" "$is_silent"
+    fi
+    
+    # find and empty volume trash directories using find command
+    _log "INFO" "Looking for volume trash directories..." "$log_file" "$is_silent"
+    if [[ "$is_verbose" == true ]]; then
+      # use find to safely handle volumes with spaces and special characters
+      _run_command "Empty volume trash" "sudo find /Volumes -type d -name '.Trashes' -exec sh -c 'echo \"Processing {}\" && rm -rfv {}/* 2>/dev/null || true' \\;" "$log_file" "$is_verbose" "$is_silent" false
+    else
+      _run_command "Empty volume trash" "sudo find /Volumes -type d -name '.Trashes' -exec rm -rf {}/* \\; 2>/dev/null || true" "$log_file" "$is_verbose" "$is_silent" false
+    fi
+    
+    _log "SUCCESS" "Trash emptied successfully" "$log_file" "$is_silent"
+  fi
+  
+  # clean logs
+  if [[ "$is_only_trash" == false ]]; then
+    _log "INFO" "Cleaning system logs..." "$log_file" "$is_silent"
+    
+    # use find for log files to avoid glob expansion issues
+    if [[ "$is_verbose" == true ]]; then
+      _run_command "Clean ASL logs" "sudo find /private/var/log/asl -name '*.asl' -type f -exec rm -rfv {} \\; 2>/dev/null || true" "$log_file" "$is_verbose" "$is_silent" false
+    else
+      _run_command "Clean ASL logs" "sudo find /private/var/log/asl -name '*.asl' -type f -exec rm -rf {} \\; 2>/dev/null || true" "$log_file" "$is_verbose" "$is_silent" false
+    fi
+    
+    # clean quarantine events database
+    _log "INFO" "Cleaning quarantine events database..." "$log_file" "$is_silent"
+    if compgen -G "$HOME/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV*" > /dev/null; then
+      local db_path=$(ls -1 "$HOME"/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV* 2>/dev/null | head -1)
+      if [[ -n "$db_path" ]]; then
+        _run_command "Clean quarantine events database" "sqlite3 \"$db_path\" 'delete from LSQuarantineEvent'" "$log_file" "$is_verbose" "$is_silent" false
+      else
+        _log "INFO" "No quarantine events database found" "$log_file" "$is_silent"
+      fi
+    else
+      _log "INFO" "No quarantine events database found" "$log_file" "$is_silent"
+    fi
+    
+    _log "SUCCESS" "System logs cleaned successfully" "$log_file" "$is_silent"
+  fi
+  
+  if [[ "$error_count" -gt 0 ]]; then
+    _log "WARNING" "Operation completed with $error_count errors" "$log_file" "$is_silent"
+    return 1
+  else
+    _log "SUCCESS" "All operations completed successfully" "$log_file" "$is_silent"
+    return 0
+  fi
+}
+
+# Remove Python cache files
+# Options:
+#   -t: Test mode (show what would be deleted without actually deleting)
+# usage: _clean_pycache [-t]
+_clean_pycache() {
+  local test_mode=false
+  
+  if [[ "$1" == "-t" ]]; then
+    test_mode=true
+    echo -e "${YELLOW}🧪 TEST MODE:${NC} Files will not be deleted"
+  fi
+  
+  if $test_mode; then
+    echo -e "${CYAN}Would remove these __pycache__ directories:${NC}"
+    find . -type d -name "__pycache__" -ls
+    
+    echo -e "${CYAN}Would remove these .pyc files:${NC}"
+    find . -name "*.pyc" -ls
+    
+    echo -e "${CYAN}Would remove these .pyo files:${NC}"
+    find . -name "*.pyo" -ls
+  else
+    echo -e "${BLUE}🧹 Removing __pycache__ directories...${NC}"
+    find . -type d -name "__pycache__" -exec rm -rv {} + 2>/dev/null
+    
+    echo -e "${BLUE}🧹 Removing .pyc files...${NC}"
+    find . -name "*.pyc" -delete
+    
+    echo -e "${BLUE}🧹 Removing .pyo files...${NC}"
+    find . -name "*.pyo" -delete
+    
+    echo -e "${GREEN}✅ Python cache files cleaned!${NC}"
+  fi
+}
+
+#############################################################################
+# FINANCE FUNCTIONS
+#############################################################################
+
+_fetch_exchange_rate() {
+    local base_currency=$1
+    local target_currency=$2
+
+    if ! command -v curl &> /dev/null; then
+        echo -e "${RED}Error:${NC} curl is not installed. Please install curl."
+        exit 1
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}Error:${NC} jq is not installed. Please install jq."
+        exit 1
+    fi
+    
+    local api_url="https://api.exchangerate-api.com/v4/latest/${base_currency}"
+    local response=$(curl -s "$api_url")
+
+    if [[ -z "$response" ]]; then
+        echo -e "${RED}Error:${NC} Failed to fetch data from API."
+        return 1
+    fi
+
+    local rate=$(echo "$response" | jq -r ".rates.${target_currency}")
+
+    if [[ -z "$rate" || "$rate" == "null" ]]; then
+        echo -e "${RED}Error:${NC} Exchange rate for ${base_currency} to ${target_currency} not found."
+        return 1
+    fi
+
+    echo "$rate"
+}
+
+_convert_currency() {
+    local base_currency=$1
+    local target_currency=$2
+    local amount=${3:-1}
+
+    if ! [[ $amount =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        echo -e "${RED}Error:${NC} Invalid amount. Please provide a valid number."
+        return 1
+    fi
+    
+    local rate=$(_fetch_exchange_rate "$base_currency" "$target_currency")
+    
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+    
+    if [[ $amount -eq 1 ]]; then
+        echo -e "${GREEN}${base_currency}/${target_currency}:${NC} ${rate}"
+    else
+        local result=$(echo "$amount * $rate" | bc -l)
+        local formatted_result=$(printf "%.2f" $result)
+        echo -e "${GREEN}${amount} ${base_currency} = ${formatted_result} ${target_currency}${NC}"
+    fi
+}
+
+# fetch latest exchange rates for USD, GBP, EUR to TRY
+_exchange_rates() {
+    local pairs=("USD:TRY" "GBP:TRY" "EUR:TRY" "USD:GBP" "GBP:USD")
+    
+    for pair in "${pairs[@]}"; do
+        IFS=':' read -r base target <<< "$pair"
+        _convert_currency "$base" "$target"
+    done
+}
+
+_usdtry() { _convert_currency "USD" "TRY" "${1:-1}"; }
+_gbptur() { _convert_currency "GBP" "TRY" "${1:-1}"; }
+_eurtry() { _convert_currency "EUR" "TRY" "${1:-1}"; }
+
+## eof
