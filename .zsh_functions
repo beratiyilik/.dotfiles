@@ -1,0 +1,1160 @@
+#!/bin/zsh
+
+#############################################################################
+# UTILITY FUNCTIONS
+#############################################################################
+
+# prints a greeting with the provided name
+# Usage: greeting [name]
+function greeting() {
+  local name=${1:-"User"}  # Default to "User" if no name provided
+  echo "Hello $name!"
+}
+
+#############################################################################
+# TIME AND DATE FUNCTIONS
+#############################################################################
+
+# returns the current unix timestamp
+# Usage: _getTimestamp
+function _getTimestamp() {
+  echo $(date +%s)
+}
+
+# formats timestamp according to specified format or default
+# Usage: _formatTimestamp [timestamp] [format]
+function _formatTimestamp() {
+  local timestamp=${1:-$(date +%s)}  # Use current time if not provided
+  local format=${2:-"%Y-%m-%d %H:%M:%S"}  # Default format
+  date -r "$timestamp" +"$format" 2>/dev/null || echo "Invalid timestamp"
+}
+
+# returns the current date in specified format (default: YYYYMMDD)
+# Usage: _getDateAsPrefix [format]
+function _getDateAsPrefix() {
+  local format=${1:-"%Y%m%d"}
+  echo $(date +"$format")
+}
+
+#############################################################################
+# FILE AND DIRECTORY OPERATIONS
+#############################################################################
+
+# checks if the given path is a file
+# Usage: _isFile path
+function _isFile() {
+  if [[ -z "$1" ]]; then
+    echo "false"
+    return 1
+  fi
+  
+  if [[ -f "$1" ]]; then
+    echo "true"
+    return 0
+  else
+    echo "false"
+    return 1
+  fi
+}
+
+# checks if the given path is a directory
+# Usage: _isDirectory path
+function _isDirectory() {
+  if [[ -z "$1" ]]; then
+    echo "false"
+    return 1
+  fi
+  
+  if [[ -d "$1" ]]; then
+    echo "true"
+    return 0
+  else
+    echo "false"
+    return 1
+  fi
+}
+
+# creates a backup of given files by appending a timestamp
+# Options: 
+#   -c: Compress the backup
+#   -d: Custom backup directory
+# Usage: _bakFile [-c] [-d backup_dir] file1 [file2...]
+function _bakFile() {
+  local compress=false
+  local backup_dir=""
+  local OPTIND=1
+  
+  while getopts ":cd:" opt; do
+    case $opt in
+      c) compress=true ;;
+      d) backup_dir="${OPTARG%/}/" ;;
+      \?) echo "Invalid option: -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  if [[ $# -eq 0 ]]; then
+    echo "Usage: _bakFile [-c] [-d backup_dir] file1 [file2...]"
+    return 1
+  fi
+  
+  local timestamp=$(_getTimestamp)
+  local arr=("$@")
+  
+  for i in "${arr[@]}"; do
+    if [[ -f "$i" ]]; then
+      local backup_file="${backup_dir}$(basename "$i").$timestamp-bak"
+      echo "Creating backup: $backup_file"
+      cp "$i" "$backup_file"
+      
+      if $compress; then
+        echo "Compressing backup..."
+        gzip "$backup_file"
+        echo "Created ${backup_file}.gz"
+      fi
+    else
+      echo "Warning: $i is not a file, skipping"
+    fi
+  done
+}
+
+#############################################################################
+# HASHING AND CHECKSUMS
+#############################################################################
+
+# generates a hash for a given file
+# Usage: _generateHash file [algorithm]
+# Supported algorithms: md5, sha1, sha256, sha512
+function _generateHash() {
+  if [[ -z "$1" ]]; then
+    echo "Usage: _generateHash file [algorithm]"
+    return 1
+  fi
+  
+  if [[ ! -f "$1" ]]; then
+    echo "Error: File not found: $1"
+    return 1
+  fi
+  
+  local algo="${2:-sha256}"
+  case "$algo" in
+    md5)
+      md5sum "$1" 2>/dev/null || md5 -q "$1" || openssl md5 -r "$1" | awk '{print $1}'
+      ;;
+    sha1)
+      shasum -a 1 "$1" 2>/dev/null | awk '{print $1}' || openssl sha1 -r "$1" | awk '{print $1}'
+      ;;
+    sha256)
+      shasum -a 256 "$1" 2>/dev/null | awk '{print $1}' || openssl sha256 -r "$1" | awk '{print $1}'
+      ;;
+    sha512)
+      shasum -a 512 "$1" 2>/dev/null | awk '{print $1}' || openssl sha512 -r "$1" | awk '{print $1}'
+      ;;
+    *)
+      echo "Unsupported algorithm: $algo"
+      return 1
+      ;;
+  esac
+}
+
+# generates a SHA256 hash for a given file using shasum (legacy function)
+# Usage: _generateSHA256 file
+function _generateSHA256() {
+  _generateHash "$1" "sha256"
+}
+
+# generates a SHA256 hash for a given file using openssl (legacy function)
+# Usage: _checksumSHA256 file
+function _checksumSHA256() {
+  openssl dgst -sha256 "$1"
+}
+
+#############################################################################
+# PROCESS MANAGEMENT
+#############################################################################
+
+# kills processes running on the specified ports
+# Usage: _killProcessesOnPorts [-f] port1 [port2 port3]
+# Options: -f force kill without confirmation
+function _killProcessesOnPorts() {
+  local force=false
+  if [[ "$1" == "-f" ]]; then
+    force=true
+    shift
+  fi
+  
+  local defaultPort=8080
+  local ports=("$@")
+  
+  if [[ ${#ports[@]} -gt 3 ]]; then
+    echo "Error: Too many arguments. Please provide up to 3 port numbers."
+    return 1
+  fi
+  
+  if [[ ${#ports[@]} -eq 0 ]]; then
+    ports=($defaultPort)
+  fi
+  
+  for portNumber in "${ports[@]}"; do
+    if ! [[ "$portNumber" =~ ^[0-9]+$ ]]; then
+      echo "Error: '$portNumber' is not a valid port number"
+      continue
+    fi
+    
+    local processIds=$(lsof -i :${portNumber} -t)
+    
+    if [[ -z "${processIds}" ]]; then
+      echo "No process is running on port ${portNumber}"
+    else
+      echo "Found processes on port ${portNumber}: ${processIds}"
+      
+      # Show process details
+      for pid in ${processIds}; do
+        ps -p $pid -o pid,ppid,user,command
+      done
+      
+      if ! $force; then
+        read "confirm?Kill these processes? (y/N) "
+        if [[ "$confirm" != [yY]* ]]; then
+          echo "Skipping port ${portNumber}"
+          continue
+        fi
+      fi
+      
+      for pid in ${processIds}; do
+        echo "Killing process ${pid}..."
+        kill -9 ${pid}
+        if [[ $? -eq 0 ]]; then
+          echo "Process ${pid} killed"
+        else
+          echo "Failed to kill process ${pid}"
+        fi
+      done
+    fi
+  done
+}
+
+# finds and displays processes by name with option to kill them
+# Usage: _findProcess [-k] pattern
+function _findProcess() {
+  local kill_mode=false
+  if [[ "$1" == "-k" ]]; then
+    kill_mode=true
+    shift
+  fi
+  
+  if [[ -z "$1" ]]; then
+    echo "Usage: _findProcess [-k] pattern"
+    return 1
+  fi
+  
+  local pattern="$1"
+  local processes=$(ps aux | grep -i "$pattern" | grep -v "grep")
+  
+  if [[ -z "$processes" ]]; then
+    echo "No processes found matching: $pattern"
+    return 0
+  fi
+  
+  echo "Found processes:"
+  echo "$processes"
+  
+  if $kill_mode; then
+    read "confirm?Kill these processes? (y/N) "
+    if [[ "$confirm" == [yY]* ]]; then
+      echo "$processes" | awk '{print $2}' | xargs kill -9
+      echo "Processes killed"
+    fi
+  fi
+}
+
+#############################################################################
+# ARCHIVE MANAGEMENT
+#############################################################################
+
+# Universal archive extraction function
+# Usage: _extract [-d destination] file
+function _extract() {
+  local destination=""
+  local OPTIND=1
+  
+  while getopts ":d:" opt; do
+    case $opt in
+      d) destination="$OPTARG" ;;
+      \?) echo "Invalid option: -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  if [[ -z "$1" ]]; then
+    echo "Usage: _extract [-d destination] file"
+    return 1
+  fi
+  
+  local file="$1"
+  local extract_dir="${destination:-$(pwd)}"
+  
+  if [[ ! -f "$file" ]]; then
+    echo "Error: File not found: $file"
+    return 1
+  fi
+  
+  mkdir -p "$extract_dir"
+  
+  case "$file" in
+    *.tar.bz2|*.tbz2)
+      tar xjf "$file" -C "$extract_dir"
+      ;;
+    *.tar.gz|*.tgz)
+      tar xzf "$file" -C "$extract_dir"
+      ;;
+    *.tar.xz|*.txz)
+      tar xJf "$file" -C "$extract_dir"
+      ;;
+    *.tar)
+      tar xf "$file" -C "$extract_dir"
+      ;;
+    *.bz2)
+      bunzip2 -c "$file" > "$extract_dir/$(basename "${file%.bz2}")"
+      ;;
+    *.gz)
+      gunzip -c "$file" > "$extract_dir/$(basename "${file%.gz}")"
+      ;;
+    *.zip)
+      unzip -q "$file" -d "$extract_dir"
+      ;;
+    *.rar)
+      unrar x "$file" "$extract_dir"
+      ;;
+    *.7z)
+      7z x "$file" -o"$extract_dir"
+      ;;
+    *)
+      echo "Unsupported file format: $file"
+      return 1
+      ;;
+  esac
+  
+  echo "Extracted to: $extract_dir"
+}
+
+# Universal archive creation function
+# Usage: _archive [-f format] output_file input1 [input2...]
+function _archive() {
+  local format="tar.gz"
+  local OPTIND=1
+  
+  while getopts ":f:" opt; do
+    case $opt in
+      f) format="$OPTARG" ;;
+      \?) echo "Invalid option: -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  if [[ $# -lt 2 ]]; then
+    echo "Usage: _archive [-f format] output_file input1 [input2...]"
+    echo "Supported formats: tar, tar.gz, tar.bz2, tar.xz, zip, 7z"
+    return 1
+  fi
+  
+  local output="$1"
+  shift
+  local inputs=("$@")
+  
+  # Add extension if not present
+  case "$format" in
+    tar) [[ "$output" != *.tar ]] && output="${output}.tar" ;;
+    tar.gz|tgz) [[ "$output" != *.tar.gz && "$output" != *.tgz ]] && output="${output}.tar.gz" ;;
+    tar.bz2|tbz2) [[ "$output" != *.tar.bz2 && "$output" != *.tbz2 ]] && output="${output}.tar.bz2" ;;
+    tar.xz|txz) [[ "$output" != *.tar.xz && "$output" != *.txz ]] && output="${output}.tar.xz" ;;
+    zip) [[ "$output" != *.zip ]] && output="${output}.zip" ;;
+    7z) [[ "$output" != *.7z ]] && output="${output}.7z" ;;
+    *)
+      echo "Unsupported format: $format"
+      return 1
+      ;;
+  esac
+  
+  # Create archive based on format
+  case "$format" in
+    tar)
+      tar -cf "$output" "${inputs[@]}"
+      ;;
+    tar.gz|tgz)
+      tar -czf "$output" "${inputs[@]}"
+      ;;
+    tar.bz2|tbz2)
+      tar -cjf "$output" "${inputs[@]}"
+      ;;
+    tar.xz|txz)
+      tar -cJf "$output" "${inputs[@]}"
+      ;;
+    zip)
+      zip -r "$output" "${inputs[@]}"
+      ;;
+    7z)
+      7z a "$output" "${inputs[@]}"
+      ;;
+  esac
+  
+  echo "Created archive: $output"
+}
+
+# compresses a file or folder into a tar.gz archive (legacy function)
+# Usage: _tarc <file | folder> [output]
+function _tarc() {
+  # check if the first argument (the file/folder to archive) is provided
+  if [ -z "$1" ]; then
+    echo "Usage: _tarc <file | folder> [output]"
+    return 1
+  fi
+  local input="$1"
+  local output="$2"
+  # verify that the input path exists
+  if [ -e "$input" ]; then
+    # if no second argument is given, derive the name from the input
+    if [ -z "$output" ]; then
+      output="$(basename "$input")"
+      output="${output%.*}"  # remove the file extension if present
+    fi
+    # create the tar.gz archive
+    tar -czvf "${output}.tar.gz" "$input"
+  else
+    echo "Error: $input is not a valid file or directory."
+    return 1
+  fi
+}
+
+# extracts a tar.gz archive (legacy function)
+# Usage: _tarx <file.tar.gz>
+function _tarx() {
+  if [ -z "$1" ]; then
+    echo "Usage: _tarx <file.tar.gz>"
+    return 1
+  fi
+  if [ -f "$1" ] && [[ "$1" =~ \.tar\.gz$ ]]; then
+    tar -xzvf "$1"
+  else
+    echo "Error: $1 is not a valid tar.gz file."
+    return 1
+  fi
+}
+
+# creates a tar.gz archive of the given file or folder (legacy function)
+# Usage: _backup_tar <file_or_folder>
+function _backup_tar() {
+  # check if the first argument (the file/folder to backup) is provided
+  if [ -z "$1" ]; then
+    echo "Usage: _backup_tar <file_or_folder>"
+    return 1
+  fi
+  local input="$1"
+  local date_prefix="$(_getDateAsPrefix)"
+  local output="${date_prefix}-$(basename "$input")"
+  # call the existing _tarc function
+  _tarc "$input" "$output"
+}
+
+#############################################################################
+# TERMINAL AND EDITOR MANAGEMENT
+#############################################################################
+
+# Opens a new terminal window with the specified command and profile
+# Usage: _open_terminal [-c command] [-p profile]
+function _open_terminal() {
+    local command=""
+    local profile="default"
+    local options
+    options=$(getopt -o c:p: --long command:,profile: -- "$@") || return 1
+    eval set -- "$options"
+    
+    while true; do
+        case "$1" in
+            -c|--command)
+                command="$2"
+                shift 2
+                ;;
+            -p|--profile)
+                profile="$2"
+                shift 2
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                echo "Invalid option: $1" >&2
+                return 1
+                ;;
+        esac
+    done
+    
+    # Detect OS and use appropriate method
+    case "$(uname)" in
+        Darwin)
+            # macOS
+            osascript <<EOF
+            tell application "Terminal"
+                do script "$command"
+                set current settings of front window to settings set "$profile"
+            end tell
+EOF
+            ;;
+        Linux)
+            # Linux - try common terminals
+            if command -v gnome-terminal &>/dev/null; then
+                gnome-terminal -- bash -c "$command; exec bash"
+            elif command -v xterm &>/dev/null; then
+                xterm -e "bash -c '$command; exec bash'" &
+            else
+                echo "No supported terminal found"
+                return 1
+            fi
+            ;;
+        CYGWIN*|MINGW*|MSYS*)
+            # Windows
+            if command -v start &>/dev/null; then
+                start cmd.exe /k "$command"
+            else
+                echo "Cannot open terminal on this Windows system"
+                return 1
+            fi
+            ;;
+        *)
+            echo "Unsupported operating system"
+            return 1
+            ;;
+    esac
+}
+
+# Unified function to open different code editors
+# Usage: _code [-v | -a | -c | -vt | -ct] [file | folder]
+function _code() {
+    # define paths for each editor
+    local VSCODE_PATH="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    local ADS_PATH="/Applications/Azure Data Studio.app/Contents/Resources/app/bin/code"
+    local CURSOR_PATH="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
+    # define tunnel paths
+    local VSCODE_TUNNEL_PATH="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code_tunnel"
+    local CURSOR_TUNNEL_PATH="/Applications/Cursor.app/Contents/Resources/app/bin/cursor_tunnel"
+    local usage
+    usage="$(cat <<EOF
+Usage: _code [options] [file | folder]
+
+Options:
+  -v, --vsc            Open in VS Code
+  -a, --ads            Open in Azure Data Studio
+  -c, --cursor         Open in Cursor
+  -vt, --vsc-tunnel    Use VS Code tunnel
+  -ct, --cursor-tunnel Use Cursor tunnel
+  -h, --help           Show this help message
+
+Usage: _code [-v | --vsc] [-a | --ads] [-c | --cursor] [-vt | --vsc-tunnel] [-ct | --cursor-tunnel] [file | folder]
+
+Examples:
+  _code -v
+  _code -a
+  _code -c
+EOF
+    )"
+    # default editor to VS Code
+    local editor="vsc"
+    local args=()
+    # if no arguments, just open the default editor (VS Code)
+    if [[ $# -eq 0 ]]; then
+        "$VSCODE_PATH"
+        return
+    fi
+    # parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -v|--vsc)
+                editor="vsc"
+                shift
+                ;;
+            -a|--ads)
+                editor="ads"
+                shift
+                ;;
+            -c|--cursor)
+                editor="cursor"
+                shift
+                ;;
+            -vt|--vsc-tunnel)
+                editor="vsc-tunnel"
+                shift
+                ;;
+            -ct|--cursor-tunnel)
+                editor="cursor-tunnel"
+                shift
+                ;;
+            -h|--help)
+                echo "$usage"
+                return
+                ;;
+            *)
+                args+=("$1")  # collect all file/folder arguments
+                shift
+                ;;
+        esac
+    done
+    # invoke the correct command
+    case "$editor" in
+        vsc) "$VSCODE_PATH" "${args[@]}" ;;
+        ads) "$ADS_PATH" "${args[@]}" ;;
+        cursor) "$CURSOR_PATH" "${args[@]}" ;;
+        vsc-tunnel) "$VSCODE_TUNNEL_PATH" "${args[@]}" ;;
+        cursor-tunnel) "$CURSOR_TUNNEL_PATH" "${args[@]}" ;;
+    esac
+}
+
+#############################################################################
+# PATH MANAGEMENT
+#############################################################################
+
+# Displays or removes duplicates from PATH
+# Usage: _path_duplicates [-d]
+# -d parameter: remove duplicates from PATH
+function _path_duplicates() {
+  local do_dedupe=false
+  [[ "$1" == "-d" ]] && do_dedupe=true
+  # split $PATH into an array by ':'
+  typeset -a path_array
+  path_array=("${(@s/:/)PATH}")
+  # associative arrays to track occurrences
+  typeset -A seen
+  typeset -A duplicates
+  # count each directory
+  for dir in "${path_array[@]}"; do
+    [[ -z "$dir" ]] && continue  # skip empty entries
+    (( ++seen["$dir"] == 2 )) && duplicates["$dir"]=1
+  done
+  if ! $do_dedupe; then
+    # just print the duplicated directories
+    if [[ ${#duplicates[@]} -eq 0 ]]; then
+      echo "No duplicate directories found in PATH."
+    else
+      echo "Duplicate directories:"
+      print -l -- ${(k)duplicates}
+    fi
+  else
+    # remove duplicated directories and update PATH
+    typeset -A used
+    typeset -a deduped
+    for dir in "${path_array[@]}"; do
+      [[ -z "$dir" ]] && continue
+      # add only if not already added
+      if [[ -z "${used[$dir]}" ]]; then
+        used[$dir]=1
+        deduped+="$dir"
+      fi
+    done
+    # rebuild the PATH from the deduplicated array
+    local new_path
+    new_path="$(IFS=':'; echo "${deduped[*]}")"
+    # export updated PATH
+    export PATH="$new_path"
+    echo "PATH has been updated by removing duplicates."
+  fi
+}
+
+# Path management: view, add, remove, dedupe PATH entries
+# Usage: _path_manage [command] [directory]
+# Commands: list, add, remove, dedupe
+function _path_manage() {
+  local command=${1:-"list"}
+  local dir="$2"
+  
+  case "$command" in
+    list)
+      echo "Current PATH entries:"
+      echo "$PATH" | tr ':' '\n' | nl
+      ;;
+      
+    add)
+      if [[ -z "$dir" ]]; then
+        echo "Usage: _path_manage add directory"
+        return 1
+      fi
+      
+      if [[ ! -d "$dir" ]]; then
+        echo "Warning: $dir is not a directory"
+      fi
+      
+      if [[ ":$PATH:" == *":$dir:"* ]]; then
+        echo "$dir is already in PATH"
+      else
+        export PATH="$dir:$PATH"
+        echo "Added $dir to PATH"
+      fi
+      ;;
+      
+    remove)
+      if [[ -z "$dir" ]]; then
+        echo "Usage: _path_manage remove directory"
+        return 1
+      fi
+      
+      if [[ ":$PATH:" == *":$dir:"* ]]; then
+        export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "^$dir\$" | tr '\n' ':' | sed 's/:$//')
+        echo "Removed $dir from PATH"
+      else
+        echo "$dir is not in PATH"
+      fi
+      ;;
+      
+    dedupe)
+      # Using our existing _path_duplicates function with -d option
+      _path_duplicates -d
+      ;;
+      
+    *)
+      echo "Unknown command: $command"
+      echo "Usage: _path_manage [list|add|remove|dedupe] [directory]"
+      return 1
+      ;;
+  esac
+}
+
+#############################################################################
+# ADDITIONAL UTILITY FUNCTIONS
+#############################################################################
+
+# Shows interactive disk usage for current directory
+# Usage: _disk_usage
+function _disk_usage() {
+  if command -v ncdu &>/dev/null; then
+    ncdu
+  else
+    du -hd 1 | sort -hr
+  fi
+}
+
+# Creates a simple HTTP server in the current directory
+# Usage: _serve [port]
+function _serve() {
+  local port=${1:-8000}
+  if command -v python3 &>/dev/null; then
+    echo "Starting server at http://localhost:$port"
+    python3 -m http.server $port
+  elif command -v python &>/dev/null; then
+    echo "Starting server at http://localhost:$port"
+    python -m SimpleHTTPServer $port
+  else
+    echo "Python not found, cannot start server"
+    return 1
+  fi
+}
+
+# Generates a secure random password
+# Usage: _genpass [length]
+function _genpass() {
+  local length=${1:-16}
+  if ! [[ "$length" =~ ^[0-9]+$ ]] || [[ $length -lt 8 ]]; then
+    echo "Length must be a number >= 8"
+    return 1
+  fi
+  
+  if command -v openssl &>/dev/null; then
+    openssl rand -base64 $((length*3/4)) | head -c $length
+  else
+    < /dev/urandom tr -dc 'A-Za-z0-9!@#$%^&*()_+' | head -c $length
+  fi
+  echo  # Add newline
+}
+
+# Simplified git status helper
+# Usage: _git_status_short
+function _git_status_short() {
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    echo "Not a git repository"
+    return 1
+  fi
+  
+  # Show branch and status
+  local branch=$(git symbolic-ref --short HEAD 2>/dev/null || git describe --tags --always 2>/dev/null)
+  local changes=$(git status --porcelain | wc -l | tr -d ' ')
+  
+  echo "Branch: $branch"
+  if [[ $changes -eq 0 ]]; then
+    echo "✓ Working tree clean"
+  else
+    echo "⚠ $changes file(s) changed"
+    git status --short
+  fi
+}
+
+# JSON pretty printer with colorized output
+# Usage: _json_pretty [file | command output]
+function _json_pretty() {
+  if [[ -p /dev/stdin ]]; then
+    # Data from pipe
+    if command -v jq &>/dev/null; then
+      jq -C '.'
+    else
+      python -m json.tool
+    fi
+  elif [[ -f "$1" ]]; then
+    # Data from file
+    if command -v jq &>/dev/null; then
+      jq -C '.' "$1"
+    else
+      python -m json.tool "$1"
+    fi
+  else
+    echo "Usage: _json_pretty [file] or command | _json_pretty"
+    return 1
+  fi
+}
+
+#############################################################################
+# SYSTEM MAINTENANCE FUNCTIONS
+#############################################################################
+
+# Updates all system packages depending on the OS
+# Options:
+#   -y: Say yes to all prompts
+#   -v: Verbose output
+# Usage: _system_update [-y] [-v]
+function _system_update() {
+  local auto_yes=false
+  local verbose=false
+  local OPTIND=1
+  local log_file="/tmp/update_log_$(date +%Y%m%d_%H%M%S).txt"
+  
+  while getopts ":yv" opt; do
+    case $opt in
+      y) auto_yes=true ;;
+      v) verbose=true ;;
+      \?) echo "Invalid option: -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+
+  echo "🔄 Starting system update process..."
+  echo "📝 Full log will be saved to $log_file"
+  
+  # Detect OS type
+  case "$(uname)" in
+    Darwin)
+      # macOS
+      echo "🍎 macOS detected"
+      
+      # macOS Software Update
+      echo "⬆️ Checking for macOS system updates..."
+      if $auto_yes; then
+        sudo softwareupdate -i -a | tee -a $log_file
+      else
+        sudo softwareupdate -l
+        read "confirm?Install macOS updates? (y/N) "
+        if [[ "$confirm" == [yY]* ]]; then
+          sudo softwareupdate -i -a | tee -a $log_file
+        fi
+      fi
+      
+      # Homebrew updates
+      if command -v brew &>/dev/null; then
+        echo "🍺 Updating Homebrew packages..."
+        brew update | tee -a $log_file
+        if $verbose; then
+          brew upgrade --verbose | tee -a $log_file
+        else
+          brew upgrade | tee -a $log_file
+        fi
+        brew cleanup | tee -a $log_file
+      fi
+      
+      # Node.js packages
+      if command -v npm &>/dev/null; then
+        echo "📦 Updating npm and global Node.js packages..."
+        npm install npm -g | tee -a $log_file
+        npm update -g | tee -a $log_file
+      fi
+      
+      # Ruby gems
+      if command -v gem &>/dev/null; then
+        echo "💎 Updating Ruby gems..."
+        sudo gem update --system | tee -a $log_file
+        sudo gem update | tee -a $log_file
+        sudo gem cleanup | tee -a $log_file
+      fi
+      ;;
+      
+    Linux)
+      # Linux
+      echo "🐧 Linux detected"
+      
+      # Debian/Ubuntu
+      if command -v apt &>/dev/null; then
+        echo "📦 Debian/Ubuntu package manager detected"
+        echo "⬆️ Updating apt packages..."
+        sudo apt update | tee -a $log_file
+        if $auto_yes; then
+          sudo apt upgrade -y | tee -a $log_file
+          sudo apt autoremove -y | tee -a $log_file
+        else
+          sudo apt upgrade | tee -a $log_file
+          sudo apt autoremove | tee -a $log_file
+        fi
+      # Arch Linux
+      elif command -v pacman &>/dev/null; then
+        echo "📦 Arch package manager detected"
+        echo "⬆️ Updating pacman packages..."
+        if $auto_yes; then
+          sudo pacman -Syu --noconfirm | tee -a $log_file
+        else
+          sudo pacman -Syu | tee -a $log_file
+        fi
+      # Fedora
+      elif command -v dnf &>/dev/null; then
+        echo "📦 Fedora package manager detected"
+        echo "⬆️ Updating dnf packages..."
+        if $auto_yes; then
+          sudo dnf update -y | tee -a $log_file
+        else
+          sudo dnf update | tee -a $log_file
+        fi
+      # Older Red Hat based
+      elif command -v yum &>/dev/null; then
+        echo "📦 Red Hat package manager detected"
+        echo "⬆️ Updating yum packages..."
+        if $auto_yes; then
+          sudo yum update -y | tee -a $log_file
+        else
+          sudo yum update | tee -a $log_file
+        fi
+      else
+        echo "⚠️ No supported package manager found"
+      fi
+      
+      # Flatpak
+      if command -v flatpak &>/dev/null; then
+        echo "📦 Updating flatpak packages..."
+        flatpak update | tee -a $log_file
+      fi
+      
+      # Snap
+      if command -v snap &>/dev/null; then
+        echo "📦 Updating snap packages..."
+        sudo snap refresh | tee -a $log_file
+      fi
+      ;;
+      
+    MINGW*|MSYS*)
+      # Windows
+      echo "🪟 Windows detected"
+      
+      # Chocolatey
+      if command -v choco &>/dev/null; then
+        echo "📦 Updating Chocolatey packages..."
+        if $auto_yes; then
+          choco upgrade all -y | tee -a $log_file
+        else
+          choco upgrade all | tee -a $log_file
+        fi
+      fi
+      
+      # Scoop
+      if command -v scoop &>/dev/null; then
+        echo "📦 Updating Scoop packages..."
+        scoop update
+        scoop update '*' | tee -a $log_file
+      fi
+      ;;
+      
+    *)
+      echo "⚠️ Unknown operating system"
+      return 1
+      ;;
+  esac
+  
+  echo "✅ System update completed!"
+  echo "📝 Full log saved to $log_file"
+}
+
+# Cleans up system files such as .DS_Store, vim swap files, etc.
+# Options:
+#   -a: All cleanup operations
+#   -d: Remove .DS_Store files
+#   -s: Remove swap files
+#   -p: Remove Python cache files
+#   -t: Show what would be removed without actually removing
+# Usage: _system_cleanup [-a] [-d] [-s] [-p] [-t]
+function _system_cleanup() {
+  local clean_ds=false
+  local clean_swap=false
+  local clean_py=false
+  local test_mode=false
+  local OPTIND=1
+  
+  # If no options, show usage
+  if [ $# -eq 0 ]; then
+    echo "Usage: _system_cleanup [-a] [-d] [-s] [-p] [-t]"
+    echo "Options:"
+    echo "  -a: All cleanup operations"
+    echo "  -d: Remove .DS_Store files"
+    echo "  -s: Remove swap files"
+    echo "  -p: Remove Python cache files"
+    echo "  -t: Test mode (show what would be removed without actually removing)"
+    return 0
+  fi
+  
+  while getopts ":adspt" opt; do
+    case $opt in
+      a)
+        clean_ds=true
+        clean_swap=true
+        clean_py=true
+        ;;
+      d) clean_ds=true ;;
+      s) clean_swap=true ;;
+      p) clean_py=true ;;
+      t) test_mode=true ;;
+      \?) echo "Invalid option: -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  # Set find command based on test mode
+  local find_action=""
+  if $test_mode; then
+    echo "🧪 TEST MODE: Files will not be deleted"
+    find_action="-ls"
+  else
+    find_action="-ls -delete"
+  fi
+  
+  # Clean .DS_Store files
+  if $clean_ds; then
+    echo "🧹 Cleaning .DS_Store files..."
+    find . -type f -name '*.DS_Store' $find_action
+  fi
+  
+  # Clean swap files
+  if $clean_swap; then
+    echo "🧹 Cleaning swap files..."
+    find . -type f -name '*.sw[a-p]' $find_action
+    find . -type f -name '.*.sw[a-p]' $find_action
+  fi
+  
+  # Clean Python cache
+  if $clean_py; then
+    echo "🧹 Cleaning Python cache files..."
+    if $test_mode; then
+      find . -type d -name '__pycache__' -ls
+      find . -name '*.pyc' -ls
+      find . -name '*.pyo' -ls
+      find . -name '*.pyd' -ls
+    else
+      find . -type d -name '__pycache__' -exec rm -rv {} + 2>/dev/null
+      find . -name '*.pyc' -delete
+      find . -name '*.pyo' -delete
+      find . -name '*.pyd' -delete
+    fi
+  fi
+  
+  echo "✅ Cleanup completed!"
+}
+
+# Empties trash and system logs (macOS specific)
+# Options:
+#   -f: Force removal without confirmation
+#   -l: Clean only logs
+#   -t: Clean only trash
+# Usage: _empty_trash [-f] [-l] [-t]
+function _empty_trash() {
+  local force=false
+  local only_logs=false
+  local only_trash=false
+  local OPTIND=1
+  
+  while getopts ":flt" opt; do
+    case $opt in
+      f) force=true ;;
+      l) only_logs=true ;;
+      t) only_trash=true ;;
+      \?) echo "Invalid option: -$OPTARG" >&2; return 1 ;;
+    esac
+  done
+  
+  shift $((OPTIND-1))
+  
+  # Check if we're on macOS
+  if [[ "$(uname)" != "Darwin" ]]; then
+    echo "⚠️ This function is currently only supported on macOS"
+    return 1
+  fi
+  
+  # Confirm if not forced
+  if ! $force; then
+    read "confirm?Empty trash and clean system logs? This cannot be undone. (y/N) "
+    if [[ "$confirm" != [yY]* ]]; then
+      echo "Operation cancelled."
+      return 0
+    fi
+  fi
+  
+  # Empty trash
+  if ! $only_logs; then
+    echo "🗑️ Emptying trash..."
+    sudo rm -rfv /Volumes/*/.Trashes
+    sudo rm -rfv ~/.Trash
+  fi
+  
+  # Clean logs
+  if ! $only_trash; then
+    echo "📝 Cleaning system logs..."
+    sudo rm -rfv /private/var/log/asl/*.asl
+    
+    # Clean quarantine events database
+    echo "🧹 Cleaning quarantine events database..."
+    if [[ -e ~/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV* ]]; then
+      sqlite3 ~/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV* 'delete from LSQuarantineEvent'
+    fi
+  fi
+  
+  echo "✅ Operation completed!"
+}
+
+# Remove Python cache files
+# Options:
+#   -t: Test mode (show what would be deleted without actually deleting)
+# Usage: _clean_pycache [-t]
+function _clean_pycache() {
+  local test_mode=false
+  
+  if [[ "$1" == "-t" ]]; then
+    test_mode=true
+    echo "🧪 TEST MODE: Files will not be deleted"
+  fi
+  
+  if $test_mode; then
+    echo "Would remove these __pycache__ directories:"
+    find . -type d -name "__pycache__" -ls
+    
+    echo "Would remove these .pyc files:"
+    find . -name "*.pyc" -ls
+    
+    echo "Would remove these .pyo files:"
+    find . -name "*.pyo" -ls
+  else
+    echo "🧹 Removing __pycache__ directories..."
+    find . -type d -name "__pycache__" -exec rm -rv {} + 2>/dev/null
+    
+    echo "🧹 Removing .pyc files..."
+    find . -name "*.pyc" -delete
+    
+    echo "🧹 Removing .pyo files..."
+    find . -name "*.pyo" -delete
+    
+    echo "✅ Python cache files cleaned!"
+  fi
+}
+
+## eof
