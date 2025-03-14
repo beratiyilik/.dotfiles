@@ -1,2 +1,6 @@
 # ignore backup folder
 backup/
+
+# ignore macos related files
+.DS_Store
+*.DS_Store
